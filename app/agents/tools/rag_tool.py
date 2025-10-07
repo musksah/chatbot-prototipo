@@ -71,8 +71,17 @@ def _parse_markdown_faqs(markdown_path: Path) -> list:
         
         for section in sections:
             section = section.strip()
-            if not section or section.startswith('# '):  # Saltar cabecera principal (#)
+            if not section:
                 continue
+            
+            # Si la sección empieza con '# ' (cabecera principal), extraer solo la parte después
+            if section.startswith('# '):
+                # Buscar donde empieza el primer ## dentro de esta sección
+                parts = section.split('\n## ', 1)
+                if len(parts) > 1:
+                    section = '## ' + parts[1]  # Mantener el ## al inicio
+                else:
+                    continue  # No hay FAQs en esta sección
             
             # Buscar secciones que empiecen con ##
             if not section.startswith('##'):

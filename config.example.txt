@@ -1,0 +1,16 @@
+# Copia este archivo como .env y configura tus valores
+
+# OpenAI Configuration
+OPENAI_API_KEY=sk-your-api-key-here
+
+# Application Configuration
+ENVIRONMENT=development
+LOG_LEVEL=INFO
+
+# Server Configuration
+HOST=0.0.0.0
+PORT=8000
+
+# Database (optional, for future use)
+DATABASE_URL=sqlite:///./cootradecun.db
+

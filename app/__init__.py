@@ -1,2 +1,0 @@
-# Cootradecun Chatbot Application
-

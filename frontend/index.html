@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot Cootradecun</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 600px;
+            background: white;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background-color: #0056b3;
+            color: white;
+            padding: 12px 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            font-weight: bold;
+            font-size: 1.2rem;
+        }
+
+        .header img {
+            height: 40px;
+            width: auto;
+            border-radius: 4px;
+        }
+
+        .demo-banner {
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 8px 15px;
+            text-align: center;
+            font-size: 0.85rem;
+            border-bottom: 1px solid #ffc107;
+        }
+
+        .messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .message {
+            padding: 10px 15px;
+            border-radius: 20px;
+            max-width: 80%;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            background-color: #0078d4;
+            color: white;
+            border-bottom-right-radius: 0;
+        }
+
+        .message.bot {
+            align-self: flex-start;
+            background-color: #e9ecef;
+            color: black;
+            border-bottom-left-radius: 0;
+        }
+
+        .input-area {
+            padding: 20px;
+            border-top: 1px solid #ddd;
+            display: flex;
+            gap: 10px;
+            background: #fff;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ccc;
+            border-radius: 20px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            border-color: #0056b3;
+        }
+
+        button {
+            background-color: #0056b3;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background-color: #004494;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            font-size: 0.8rem;
+            color: #888;
+            align-self: flex-start;
+            margin-left: 10px;
+            font-style: italic;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="chat-container">
+        <div class="header">
+            <img src="img/logo cootradecun.webp" alt="Logo Cootradecun">
+            <span>Asistente Cootradecun</span>
+        </div>
+        <div class="demo-banner">
+            ✨ <strong>Vista previa</strong> — Demostración del nuevo Asistente Virtual para COOTRADECUN
+        </div>
+        <div class="messages" id="messages">
+            <!-- Messages will appear here -->
+            <div class="message bot">¡Hola! 👋 Soy el asistente virtual de <strong>COOTRADECUN</strong>. Estoy aquí para
+                ayudarte con:<br><br>
+                📋 <strong>Asociación:</strong> Requisitos, auxilios y convenios<br>
+                💰 <strong>Nóminas:</strong> Desprendibles, pagos y libranzas<br>
+                🏠 <strong>Vivienda:</strong> Créditos y proyectos de vivienda<br><br>
+                ¿En qué puedo asistirte hoy?</div>
+        </div>
+        <div class="loading" id="loading">Escribiendo...</div>
+        <div class="input-area">
+            <input type="text" id="userInput" placeholder="Escribe tu mensaje..." onkeypress="handleKeyPress(event)">
+            <button id="sendBtn" onclick="sendMessage()">Enviar</button>
+        </div>
+    </div>
+
+    <script>
+        let threadId = localStorage.getItem('chat_thread_id');
+        if (!threadId) {
+            // Simple random ID generation if not exists
+            threadId = 'user-' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('chat_thread_id', threadId);
+        }
+
+        const messagesDiv = document.getElementById('messages');
+        const userInput = document.getElementById('userInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const loadingDiv = document.getElementById('loading');
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        async function sendMessage() {
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            // Add User Message
+            addMessage(text, 'user');
+            userInput.value = '';
+            userInput.disabled = true;
+            sendBtn.disabled = true;
+            loadingDiv.style.display = 'block';
+
+            try {
+                const response = await fetch('http://localhost:8000/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: text,
+                        thread_id: threadId
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+
+                const data = await response.json();
+
+                // Allow thread_id to be updated from server if needed (optional)
+                if (data.thread_id) {
+                    threadId = data.thread_id;
+                    localStorage.setItem('chat_thread_id', threadId);
+                }
+
+                if (data.messages && data.messages.length > 0) {
+                    data.messages.forEach(msg => {
+                        addMessage(msg.content, 'bot');
+                    });
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('Lo siento, ocurrió un error al conectar con el servidor.', 'bot');
+            } finally {
+                userInput.disabled = false;
+                sendBtn.disabled = false;
+                loadingDiv.style.display = 'none';
+                userInput.focus();
+            }
+        }
+
+        // Simple markdown to HTML converter
+        function parseMarkdown(text) {
+            // Split by lines to handle headers properly
+            let lines = text.split('\n');
+            lines = lines.map(line => {
+                // Headers (must be at start of line)
+                if (line.startsWith('### ')) {
+                    return '<h4 style="margin: 8px 0 4px 0; font-size: 1rem;">' + line.substring(4) + '</h4>';
+                } else if (line.startsWith('## ')) {
+                    return '<h3 style="margin: 8px 0 4px 0; font-size: 1.1rem;">' + line.substring(3) + '</h3>';
+                } else if (line.startsWith('# ')) {
+                    return '<h2 style="margin: 8px 0 4px 0; font-size: 1.2rem;">' + line.substring(2) + '</h2>';
+                }
+                return line;
+            });
+            text = lines.join('<br>');
+
+            // Replace **bold** with <strong>bold</strong>
+            text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            // Replace *italic* with <em>italic</em>
+            text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+            return text;
+        }
+
+        function addMessage(text, sender) {
+            const div = document.createElement('div');
+            div.classList.add('message', sender);
+            if (sender === 'bot') {
+                div.innerHTML = parseMarkdown(text);
+            } else {
+                div.innerText = text;
+            }
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+    </script>
+
+</body>
+
+</html>

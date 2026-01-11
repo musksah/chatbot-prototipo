@@ -57,24 +57,48 @@ async def chat_endpoint(request: ChatRequest):
         "messages": [HumanMessage(content=request.message)]
     }
     
+    # Log incoming request
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"📥 New message from thread {thread_id}: '{request.message[:50]}...'")
+    
+    # Check current state before invocation
+    current_state = graph_with_memory.get_state(config)
+    if current_state and current_state.values:
+        dialog_state = current_state.values.get("dialog_state", [])
+        msg_count = len(current_state.values.get("messages", []))
+        logger.info(f"📊 Current state: dialog_stack={dialog_state}, messages={msg_count}")
+    else:
+        logger.info(f"📊 No prior state for this thread (new conversation)")
+    
     # We want to stream the output or get the final state.
     # invoke() returns the final state.
     try:
         final_state = graph_with_memory.invoke(inputs, config=config)
         
-        # Extract the last message if it's an AI message
-        # We need to return the conversation delta or the full history.
-        # Let's return the last AI message.
+        # Log the final state for debugging
+        logger.info(f"📤 Final state keys: {final_state.keys()}")
         
+        # Extract the last message if it's an AI message
         messages = final_state.get("messages", [])
+        logger.info(f"📤 Total messages in state: {len(messages)}")
+        
         last_message = messages[-1] if messages else None
+        
+        if last_message:
+            logger.info(f"📤 Last message type: {type(last_message).__name__}")
+            logger.info(f"📤 Last message content: {str(last_message.content)[:100] if last_message.content else 'None/Empty'}")
         
         response_messages = []
         if isinstance(last_message, AIMessage):
-             response_messages.append({"role": "assistant", "content": last_message.content})
+            content = last_message.content
+            # Handle case where content might be a list (Gemini format)
+            if isinstance(content, list):
+                content = content[0].get("text", "") if content else ""
+            response_messages.append({"role": "assistant", "content": content or "No pude generar una respuesta."})
         else:
-             # If the last message wasn't AI (unlikely unless error), send something generic
-             response_messages.append({"role": "assistant", "content": "Lo siento, hubo un error procesando tu solicitud."})
+            # If the last message wasn't AI (unlikely unless error), send something generic
+            response_messages.append({"role": "assistant", "content": "Lo siento, hubo un error procesando tu solicitud."})
 
         return ChatResponse(
             messages=response_messages,

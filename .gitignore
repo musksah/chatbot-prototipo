@@ -30,7 +30,7 @@ ENV/
 chroma_data/
 
 # Generated files
-*.pdf
+# *.pdf
 app/data/generated/
 
 # OS

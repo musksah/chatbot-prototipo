@@ -168,7 +168,7 @@ def pop_dialog_state(state: State) -> dict:
 
 # --- Prompts & Runnables ---
 
-llm = ChatGoogleGenerativeAI(model="gemini-3-pro-preview") # Using Gemini for routing and reasoning
+llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview") # Using Gemini for routing and reasoning
 
 # 1. Primary Assistant
 primary_prompt = ChatPromptTemplate.from_messages(

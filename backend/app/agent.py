@@ -7,6 +7,51 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Track token usage per conversation thread.
+_token_totals_by_thread = {}
+
+def _extract_token_usage(result) -> dict:
+    if getattr(result, "usage_metadata", None):
+        return result.usage_metadata or {}
+    response_metadata = getattr(result, "response_metadata", None) or {}
+    return response_metadata.get("usage_metadata") or response_metadata.get("usage") or response_metadata.get("token_usage") or {}
+
+def _update_and_log_token_usage(thread_id: str, usage: dict) -> None:
+    if not usage:
+        return
+    prompt_tokens = usage.get("prompt_token_count") or usage.get("prompt_tokens")
+    completion_tokens = usage.get("candidates_token_count") or usage.get("completion_tokens")
+    total_tokens = usage.get("total_token_count") or usage.get("total_tokens")
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+
+    logger.info(
+        "Gemini tokens for thread=%s: prompt=%s completion=%s total=%s",
+        thread_id,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+    )
+
+    totals = _token_totals_by_thread.setdefault(
+        thread_id,
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+    if prompt_tokens is not None:
+        totals["prompt_tokens"] += prompt_tokens
+    if completion_tokens is not None:
+        totals["completion_tokens"] += completion_tokens
+    if total_tokens is not None:
+        totals["total_tokens"] += total_tokens
+
+    logger.info(
+        "Gemini token totals for thread=%s: prompt=%s completion=%s total=%s",
+        thread_id,
+        totals["prompt_tokens"],
+        totals["completion_tokens"],
+        totals["total_tokens"],
+    )
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import AnyMessage, add_messages
 from langgraph.prebuilt import tools_condition, ToolNode
@@ -82,6 +127,10 @@ class Assistant:
         else:
             logger.info(f"💬 Agent '{self.name}' responded with content (no tool call)")
         
+        thread_id = (config or {}).get("configurable", {}).get("thread_id", "unknown")
+        usage = _extract_token_usage(result)
+        _update_and_log_token_usage(thread_id, usage)
+
         return {"messages": result}
 
 def create_entry_node(assistant_name: str, new_dialog_state: str):

@@ -1,19 +1,23 @@
 import os
 import re
+import logging
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
+logger = logging.getLogger(__name__)
+
 # Initialize embeddings
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
 def split_vivienda_by_project(docs):
     """
     Custom splitter for vivienda.pdf that keeps each project's information together.
     Projects are identified by their numbered headers in the PDF.
     """
+    logger.info("RAG: Splitting vivienda docs into project chunks (pages=%s)", len(docs))
     full_text = "\n".join([doc.page_content for doc in docs])
     
     # Clean up the text - remove excessive whitespace
@@ -46,11 +50,11 @@ def split_vivienda_by_project(docs):
                 }
             )
             project_docs.append(doc)
-            print(f"  - Extracted project: {project_name} ({len(content)} chars)")
+            logger.info("RAG: Extracted project '%s' (%s chars)", project_name, len(content))
     
     # If pattern matching failed, fall back to larger chunks
     if not project_docs:
-        print("  - Warning: Could not split by project, using large chunks")
+        logger.warning("RAG: Project split failed, falling back to large chunks")
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=3000, 
             chunk_overlap=500,
@@ -65,6 +69,7 @@ def load_and_index_docs(docs_dir: str):
     Loads PDFs from the directory, splits them, and creates a FAISS index.
     Uses specialized chunking for vivienda to keep project info together.
     """
+    logger.info("RAG: Loading docs from %s", docs_dir)
     
     associado_docs = []
     nominas_docs = []
@@ -74,14 +79,17 @@ def load_and_index_docs(docs_dir: str):
     if os.path.exists(os.path.join(docs_dir, "atencion al asociado.pdf")):
         loader = PyPDFLoader(os.path.join(docs_dir, "atencion al asociado.pdf"))
         associado_docs.extend(loader.load())
+        logger.info("RAG: Loaded atencion al asociado.pdf (pages=%s)", len(associado_docs))
 
     if os.path.exists(os.path.join(docs_dir, "nominas.pdf")):
         loader = PyPDFLoader(os.path.join(docs_dir, "nominas.pdf"))
         nominas_docs.extend(loader.load())
+        logger.info("RAG: Loaded nominas.pdf (pages=%s)", len(nominas_docs))
         
     if os.path.exists(os.path.join(docs_dir, "vivienda.pdf")):
         loader = PyPDFLoader(os.path.join(docs_dir, "vivienda.pdf"))
         vivienda_docs.extend(loader.load())
+        logger.info("RAG: Loaded vivienda.pdf (pages=%s)", len(vivienda_docs))
     
     # Standard text splitter for associado and nominas
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -92,23 +100,25 @@ def load_and_index_docs(docs_dir: str):
         splits = text_splitter.split_documents(associado_docs)
         vectorstore = FAISS.from_documents(splits, embeddings)
         retrievers["atencion_asociado"] = vectorstore.as_retriever()
-        print(f"Indexed 'Atencion al Asociado' ({len(splits)} chunks)")
+        logger.info("RAG: Indexed atencion_asociado (%s chunks)", len(splits))
         
     if nominas_docs:
         splits = text_splitter.split_documents(nominas_docs)
         vectorstore = FAISS.from_documents(splits, embeddings)
         retrievers["nominas"] = vectorstore.as_retriever()
-        print(f"Indexed 'Nominas' ({len(splits)} chunks)")
+        logger.info("RAG: Indexed nominas (%s chunks)", len(splits))
 
     if vivienda_docs:
         # Use specialized splitting for vivienda to keep projects separate
-        print("Processing 'Vivienda' with project-aware chunking...")
+        logger.info("RAG: Processing vivienda with project-aware chunking")
         splits = split_vivienda_by_project(vivienda_docs)
         vectorstore = FAISS.from_documents(splits, embeddings)
         # Increase k to get more relevant chunks since we have fewer, larger chunks
         retrievers["vivienda"] = vectorstore.as_retriever(search_kwargs={"k": 2})
-        print(f"Indexed 'Vivienda' ({len(splits)} project chunks)")
+        logger.info("RAG: Indexed vivienda (%s project chunks)", len(splits))
         
+    if not retrievers:
+        logger.warning("RAG: No documents indexed. Check PDF files and OCR/text extraction.")
     return retrievers
 
 # Global retrievers instance (lazy loaded)
@@ -118,6 +128,7 @@ def get_retrievers():
     global _retrievers
     if _retrievers is None:
         docs_path = os.path.join(os.path.dirname(__file__), "..", "docs")
+        logger.info("RAG: Initializing retrievers")
         _retrievers = load_and_index_docs(docs_path)
     return _retrievers
 

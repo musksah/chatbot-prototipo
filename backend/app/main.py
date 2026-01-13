@@ -21,6 +21,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Health check endpoint for Cloud Run
+@app.get("/")
+async def health_check():
+    return {"status": "healthy", "service": "chatbot-backend"}
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
 class ChatRequest(BaseModel):
     message: str
     thread_id: Optional[str] = None

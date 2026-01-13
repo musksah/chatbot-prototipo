@@ -19,10 +19,14 @@ from .tools import (
     ToAtencionAsociado,
     ToNominas,
     ToVivienda,
+    ToCertificados,
     CompleteOrEscalate,
     consultar_atencion_asociado,
     consultar_nominas,
     consultar_vivienda,
+    solicitar_otp,
+    verificar_codigo_otp,
+    generar_certificado_tributario,
 )
 
 # --- State Definition ---
@@ -44,6 +48,7 @@ class State(TypedDict):
                 "atencion_asociado",
                 "nominas",
                 "vivienda",
+                "certificados",
             ]
         ],
         update_dialog_stack,
@@ -135,7 +140,8 @@ primary_prompt = ChatPromptTemplate.from_messages(
             "TÚ NO TIENES acceso a información detallada. Cuando tengas claridad, delega:\n"
             "- VIVIENDA (proyectos, precios, créditos hipotecarios, Pedregal, Rancho Grande) → USA ToVivienda\n"
             "- NÓMINAS (desprendibles, pagos, libranzas) → USA ToNominas\n"
-            "- ASOCIACIÓN (requisitos, auxilios, convenios) → USA ToAtencionAsociado\n\n"
+            "- ASOCIACIÓN (requisitos, auxilios, convenios) → USA ToAtencionAsociado\n"
+            "- CERTIFICADOS (certificado tributario, certificado de aportes, paz y salvo) → USA ToCertificados\n\n"
             "**REGLA DE TEMAS NO RELACIONADOS**:\n"
             "Si el usuario pregunta sobre temas NO relacionados con COOTRADECUN (recetas, clima, deportes, etc.), "
             "responde: 'Lo siento, solo puedo ayudarte con temas relacionados con COOTRADECUN.'\n\n"
@@ -150,7 +156,7 @@ primary_prompt = ChatPromptTemplate.from_messages(
     ]
 ).partial(time=datetime.now)
 
-primary_tools = [ToAtencionAsociado, ToNominas, ToVivienda]
+primary_tools = [ToAtencionAsociado, ToNominas, ToVivienda, ToCertificados]
 primary_runnable = primary_prompt | llm.bind_tools(primary_tools)
 
 # 2. Atencion Asociado Agent
@@ -232,6 +238,37 @@ vivienda_prompt = ChatPromptTemplate.from_messages(
 vivienda_tools = [consultar_vivienda, CompleteOrEscalate]
 vivienda_runnable = vivienda_prompt | llm.bind_tools(vivienda_tools)
 
+# 5. Certificados Agent (with OTP authentication)
+certificados_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres el especialista en Certificados de COOTRADECUN. Tu trabajo es generar certificados oficiales "
+            "para los asociados, PERO SOLO después de verificar su identidad mediante OTP.\n\n"
+            "**FLUJO OBLIGATORIO para generar certificados:**\n"
+            "1. PRIMERO: Solicita al usuario su número de cédula y teléfono.\n"
+            "2. SEGUNDO: Usa la herramienta `solicitar_otp` con la cédula y teléfono.\n"
+            "3. TERCERO: Pide al usuario que ingrese el código de 6 dígitos que recibió por WhatsApp.\n"
+            "4. CUARTO: Usa la herramienta `verificar_codigo_otp` con la cédula y el código.\n"
+            "5. QUINTO: Si la verificación es exitosa, usa `generar_certificado_tributario`.\n\n"
+            "**IMPORTANTE:**\n"
+            "- NUNCA generes un certificado sin verificar el OTP primero.\n"
+            "- Si el usuario proporciona un código incorrecto, permítele intentar de nuevo.\n"
+            "- El número de teléfono debe ser colombiano (puede ser con o sin +57).\n\n"
+            "**Tipos de certificados disponibles:**\n"
+            "- Certificado Tributario (para declaración de renta)\n"
+            "- Certificado de Aportes\n"
+            "- Certificado de Paz y Salvo\n\n"
+            "Si el usuario cambia de tema, usa CompleteOrEscalate.\n"
+            "\nCurrent time: {time}."
+        ),
+        ("placeholder", "{messages}"),
+    ]
+).partial(time=datetime.now)
+
+certificados_tools = [solicitar_otp, verificar_codigo_otp, generar_certificado_tributario, CompleteOrEscalate]
+certificados_runnable = certificados_prompt | llm.bind_tools(certificados_tools)
+
 
 # --- Graph Construction ---
 
@@ -282,6 +319,7 @@ builder.add_edge("leave_skill", "primary_assistant")
 create_workflow("atencion_asociado", asociado_runnable, asociado_tools, "atencion_asociado")
 create_workflow("nominas", nominas_runnable, nominas_tools, "nominas")
 create_workflow("vivienda", vivienda_runnable, vivienda_tools, "vivienda")
+create_workflow("certificados", certificados_runnable, certificados_tools, "certificados")
 
 # Primary Routing Logic
 def route_primary(state: State):
@@ -293,12 +331,14 @@ def route_primary(state: State):
             return "enter_nominas"
         elif tool_calls[0]["name"] == ToVivienda.__name__:
             return "enter_vivienda"
+        elif tool_calls[0]["name"] == ToCertificados.__name__:
+            return "enter_certificados"
     return END
 
 builder.add_conditional_edges(
     "primary_assistant",
     route_primary,
-    ["enter_atencion_asociado", "enter_nominas", "enter_vivienda", END]
+    ["enter_atencion_asociado", "enter_nominas", "enter_vivienda", "enter_certificados", END]
 )
 
 graph = builder.compile()

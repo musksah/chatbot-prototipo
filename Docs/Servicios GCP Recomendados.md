@@ -18,113 +18,139 @@ Este documento describe los servicios de Google Cloud Platform necesarios para d
 > [!WARNING]
 > El código actual usa **Google AI Studio** (API consumer) y **OpenAI** para embeddings. Para producción en GCP, se recomienda migrar a **Vertex AI** para consolidar servicios y reducir costos.
 
----
+## 2. Modelo de Arquitectura: Cliente vs Plataforma
 
-## 2. Servicios GCP Recomendados
+La solución se divide en **dos ambientes GCP separados**:
 
-### 2.1 Compute & Backend
+| Ambiente | Descripción | Propietario |
+|----------|-------------|-------------|
+| **Proyecto Cliente** | Backend del chatbot y recursos dedicados por cliente | El cliente (ej: Cootradecun) |
+| **Proyecto Plataforma** | Dashboard Administrativo multi-tenant (White-Label) | Proveedor (licencia mensual) |
 
-| Servicio | Uso | Justificación |
-|----------|-----|---------------|
-| **Cloud Run** | Hosting de FastAPI | Serverless, escala a cero, pago por uso. Cumple SLA 99.9%. |
-| **Cloud Functions** | Webhooks de WhatsApp, envío de OTP | Para tareas puntuales event-driven. |
-
-### 2.2 Inteligencia Artificial
-
-| Servicio | Uso | Migración desde |
-|----------|-----|-----------------|
-| **Vertex AI** (Gemini) | LLM para agentes conversacionales | `langchain-google-genai` → `langchain-google-vertexai` |
-| **Vertex AI Embeddings** (Gecko) | Generación de embeddings para RAG | OpenAI Embeddings |
-| **Vertex AI Vector Search** | Almacenamiento y búsqueda de vectores | FAISS en memoria |
-
-### 2.3 Base de Datos & Almacenamiento
-
-| Servicio | Uso | Justificación |
-|----------|-----|---------------|
-| **Cloud SQL (PostgreSQL)** | Usuarios, sesiones, logs de conversación, checkpoints de LangGraph | BD relacional gestionada con alta disponibilidad. |
-| **Cloud Storage** | Almacenar PDFs (base de conocimiento RAG), certificados generados | Económico y escalable para archivos. |
-| **Firestore** *(Alternativa)* | Estado de conversaciones, cache de sesiones | NoSQL para acceso rápido (opcional vs Cloud SQL). |
-
-### 2.4 Seguridad
-
-| Servicio | Uso |
-|----------|-----|
-| **Secret Manager** | API keys (Gemini, WhatsApp Business), credenciales de BD. |
-| **Cloud Armor** | Protección DDoS y WAF para la API. |
-| **Identity Platform** *(Opcional)* | Autenticación de usuarios del panel administrativo. |
-
-### 2.5 Mensajería & Colas
-
-| Servicio | Uso |
-|----------|-----|
-| **Cloud Pub/Sub** | Cola de mensajes para procesar WhatsApp de forma asíncrona. |
-| **Cloud Tasks** | Programar envío de OTP, reintentos de mensajes fallidos. |
-
-### 2.6 Monitoreo & Observabilidad
-
-| Servicio | Uso |
-|----------|-----|
-| **Cloud Logging** | Logs centralizados de la aplicación. |
-| **Cloud Monitoring** | Alertas de disponibilidad, latencia, errores. |
-| **BigQuery** | Analítica de conversaciones, reportes de uso de tokens, intents. |
-| **Looker Studio** | Dashboards para el módulo administrativo de reportes. |
-
-### 2.7 CI/CD & DevOps
-
-| Servicio | Uso |
-|----------|-----|
-| **Artifact Registry** | Almacenar imágenes Docker del backend. |
-| **Cloud Build** | Pipeline CI/CD para automatizar despliegues. |
+> [!IMPORTANT]
+> El **Dashboard Administrativo** es una aplicación **SaaS multi-tenant** que se licencia mensualmente a los clientes. No es propiedad del cliente, sino que se le da acceso mediante licencia.
 
 ---
 
-## 3. Arquitectura Propuesta
+## 3. Recursos GCP del Cliente (Chatbot)
 
-La solución se compone de **dos aplicaciones separadas**:
+Estos recursos son desplegados en el **proyecto GCP del cliente** y son de su propiedad.
 
-1. **Backend del Chatbot** - API que procesa mensajes de WhatsApp y ejecuta los agentes LLM.
-2. **Dashboard Administrativo** - Aplicación web separada para monitoreo, reportes y gestión del RAG.
+### 3.1 Compute
+
+| Servicio | Uso |
+|----------|-----|
+| **Cloud Run** | Backend del Chatbot (FastAPI + LangGraph + Agentes) |
+
+### 3.2 Inteligencia Artificial
+
+| Servicio | Uso |
+|----------|-----|
+| **Vertex AI (Gemini)** | LLM para agentes conversacionales |
+| **Vertex AI Embeddings** | Generación de embeddings para RAG |
+| **Vertex AI Vector Search** | Búsqueda semántica de documentos |
+
+### 3.3 Base de Datos & Almacenamiento
+
+| Servicio | Uso |
+|----------|-----|
+| **Cloud SQL (PostgreSQL)** | Checkpoints de LangGraph, sesiones de usuario, logs |
+| **Cloud Storage** | PDFs de base de conocimiento, certificados generados |
+
+### 3.4 Seguridad & Mensajería
+
+| Servicio | Uso |
+|----------|-----|
+| **Secret Manager** | API keys (Gemini, WhatsApp Business, Twilio) |
+| **Cloud Tasks** | Procesamiento asíncrono de WhatsApp, envío de OTP |
+| **Cloud Armor** | Protección DDoS y WAF |
+
+### 3.5 Monitoreo
+
+| Servicio | Uso |
+|----------|-----|
+| **Cloud Logging** | Logs centralizados |
+| **Cloud Monitoring** | Alertas de disponibilidad y errores |
+
+---
+
+## 4. Recursos GCP de la Plataforma (Dashboard Admin - White-Label)
+
+Estos recursos son desplegados en el **proyecto GCP del proveedor** y son multi-tenant.
+
+### 4.1 Compute
+
+| Servicio | Uso |
+|----------|-----|
+| **Cloud Run** | Dashboard Frontend + API de Reportes (multi-tenant) |
+
+### 4.2 Base de Datos
+
+| Servicio | Uso |
+|----------|-----|
+| **Cloud SQL (PostgreSQL)** | Datos de usuarios admin, configuración de tenants, licencias |
+
+### 4.3 Seguridad
+
+| Servicio | Uso |
+|----------|-----|
+| **Identity Platform** | Autenticación de usuarios del dashboard |
+| **Secret Manager** | Credenciales de conexión a proyectos de clientes |
+
+### 4.4 CI/CD
+
+| Servicio | Uso |
+|----------|-----|
+| **Artifact Registry** | Imágenes Docker del dashboard |
+| **Cloud Build** | Pipeline CI/CD |
+
+---
+
+## 5. Arquitectura Multi-Tenant
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                               ARQUITECTURA GENERAL                               │
+│                          PROYECTO PROVEEDOR (SaaS)                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │            DASHBOARD ADMIN (White-Label Multi-Tenant)                     │   │
+│  │                        Cloud Run                                          │   │
+│  └─────────────────────────────┬────────────────────────────────────────────┘   │
+│                                │                                                 │
+│              ┌─────────────────┼─────────────────┐                              │
+│              │                 │                 │                              │
+│              ▼                 ▼                 ▼                              │
+│  ┌──────────────────┐  ┌──────────────┐  ┌──────────────────┐                   │
+│  │ Cloud SQL        │  │ Identity     │  │ Secret Manager   │                   │
+│  │ (Tenants/Users)  │  │ Platform     │  │ (Client Keys)    │                   │
+│  └──────────────────┘  └──────────────┘  └──────────────────┘                   │
+│                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
-
-    ┌─────────────────────────────────┐     ┌─────────────────────────────────┐
-    │     BACKEND CHATBOT (App 1)     │     │   DASHBOARD ADMIN (App 2)       │
-    └─────────────────────────────────┘     └─────────────────────────────────┘
-
-┌───────────────────┐                        ┌───────────────────┐
-│  WhatsApp Business│                        │   Usuarios Admin  │
-│       API         │                        │   (Navegador)     │
-└────────┬──────────┘                        └────────┬──────────┘
-         │ Webhook                                    │ HTTPS
-         ▼                                            ▼
-┌─────────────────────────┐               ┌─────────────────────────┐
-│      Cloud Run          │               │      Cloud Run          │
-│  (FastAPI + LangGraph)  │               │  (Dashboard Frontend +  │
-│    Langchain Agents     │               │   API de Reportes)      │
-└────────┬────────────────┘               └────────┬────────────────┘
-         │                                         │
-         │         ┌───────────────────────────────┤
-         │         │                               │
-         ▼         ▼                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                        SERVICIOS COMPARTIDOS                      │
-├──────────────────┬───────────────┬───────────────┬───────────────┤
-│   Vertex AI      │ Cloud Storage │   Cloud SQL   │   BigQuery    │
-│  (Gemini LLM +   │  (PDFs RAG)   │ (PostgreSQL)  │  (Analítica)  │
-│   Embeddings)    │               │ - Checkpoints │ - Uso tokens  │
-│                  │               │ - Sesiones    │ - Reportes    │
-└──────────────────┴───────────────┴───────────────┴───────────────┘
+              │                   │                    │
+              │    Conexión API   │                    │
+              ▼                   ▼                    ▼
+┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
+│  PROYECTO CLIENTE A     │  │  PROYECTO CLIENTE B     │  │  PROYECTO CLIENTE C     │
+│  (Cootradecun)          │  │  (Cliente 2)            │  │  (Cliente 3)            │
+├─────────────────────────┤  ├─────────────────────────┤  ├─────────────────────────┤
+│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │
+│ │   Cloud Run         │ │  │ │   Cloud Run         │ │  │ │   Cloud Run         │ │
+│ │   (Backend)         │ │  │ │   (Backend)         │ │  │ │   (Backend)         │ │
+│ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────────────┘ │
+│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │
+│ │ Vertex AI + SQL     │ │  │ │ Vertex AI + SQL     │ │  │ │ Vertex AI + SQL     │ │
+│ │ Storage + Tasks     │ │  │ │ Storage + Tasks     │ │  │ │ Storage + Tasks     │ │
+│ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────────────┘ │
+└─────────────────────────┘  └─────────────────────────┘  └─────────────────────────┘
 ```
 
-> [!IMPORTANT]
-> El **Dashboard Administrativo** es una aplicación independiente que consume datos de Cloud SQL y BigQuery para mostrar métricas de uso de tokens, conversaciones y gestión del RAG.
+> [!NOTE]
+> El Dashboard se conecta a los proyectos de clientes mediante **Service Account Keys** almacenadas en Secret Manager del proveedor.
 
 ---
 
-## 4. Mapeo de Requerimientos a Servicios
+## 6. Mapeo de Requerimientos a Servicios
 
 | Requerimiento (del documento de proyecto) | Servicios GCP |
 |-------------------------------------------|---------------|
@@ -132,50 +158,14 @@ La solución se compone de **dos aplicaciones separadas**:
 | RAG System para Q&A | Cloud Storage + Vertex AI Embeddings + Vector Search |
 | Agentes LLM (conversación fluida) | Vertex AI (Gemini) |
 | Autenticación OTP (SMS/Email) | Cloud Functions + Secret Manager |
-| Módulo de Reportes y Monitoreo | BigQuery + Looker Studio + Cloud Logging |
-| Escalabilidad (alto volumen concurrente) | Cloud Run (auto-scaling) + Cloud Pub/Sub |
+| Módulo de Reportes y Monitoreo | Cloud SQL + Cloud Logging |
+| Escalabilidad (alto volumen concurrente) | Cloud Run (auto-scaling) + Cloud Tasks |
 | Seguridad de datos (cifrado) | Secret Manager + Cloud Armor + Cifrado nativo de GCP |
 | Actualización de base de conocimiento RAG | Cloud Storage + Admin UI |
 
 ---
 
-## 5. Cambios de Código Sugeridos (Para Migración)
-
-### 5.1 Migrar LLM a Vertex AI
-
-```python
-# ANTES (agent.py)
-from langchain_google_genai import ChatGoogleGenerativeAI
-llm = ChatGoogleGenerativeAI(model="gemini-3-pro-preview")
-
-# DESPUÉS
-from langchain_google_vertexai import ChatVertexAI
-llm = ChatVertexAI(model_name="gemini-1.5-pro", project="PROJECT_ID", location="us-central1")
-```
-
-### 5.2 Migrar Embeddings a Vertex AI
-
-```python
-# ANTES (rag.py)
-from langchain_openai import OpenAIEmbeddings
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-
-# DESPUÉS
-from langchain_google_vertexai import VertexAIEmbeddings
-embeddings = VertexAIEmbeddings(model_name="textembedding-gecko@003", project="PROJECT_ID")
-```
-
-### 5.3 Nueva Dependencia
-
-```txt
-# requirements.txt - agregar:
-langchain-google-vertexai
-google-cloud-aiplatform
-```
-
----
-
-## 6. Estimación de Costos (Referencia)
+## 7. Estimación de Costos por Cliente (Referencia)
 
 | Servicio | Tier/SKU | Costo Estimado (USD/mes) |
 |----------|----------|--------------------------|
@@ -192,7 +182,7 @@ google-cloud-aiplatform
 
 ---
 
-## 7. Próximos Pasos
+## 8. Próximos Pasos
 
 1. [ ] Crear proyecto en GCP y habilitar APIs (Vertex AI, Cloud Run, Cloud SQL).
 2. [ ] Configurar cuenta de servicio con permisos necesarios.

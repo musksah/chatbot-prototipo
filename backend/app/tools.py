@@ -97,33 +97,33 @@ CERTIFICADO_TRIBUTARIO_FAKE = {
 }
 
 
+# Número fijo para envío de OTP (Colombia)
+FIXED_OTP_PHONE = "+573024682891"
+
 @tool
-def solicitar_otp(cedula: str, telefono: str) -> str:
+def solicitar_otp(cedula: str) -> str:
     """
     Solicita el envío de un código OTP por WhatsApp para verificar la identidad del usuario.
-    Usar cuando el usuario proporcione su cédula y teléfono para obtener un certificado.
+    Usar cuando el usuario proporcione su cédula para obtener un certificado.
+    El OTP se envía automáticamente al número registrado del sistema.
     
     Args:
         cedula: Número de cédula del usuario
-        telefono: Número de teléfono del usuario (puede ser con o sin código de país)
     
     Returns:
         Mensaje indicando si el OTP fue enviado exitosamente
     """
-    # Format phone number
-    phone_formatted = format_phone_number(telefono)
-    
-    # Store state
+    # Store state with fixed phone number
     _otp_state[cedula] = {
-        "phone": phone_formatted,
+        "phone": FIXED_OTP_PHONE,
         "verified": False
     }
     
-    # Send OTP
-    success, message = send_otp(phone_formatted)
+    # Send OTP to fixed number
+    success, message = send_otp(FIXED_OTP_PHONE)
     
     if success:
-        return f"📱 {message}. Por favor, pide al usuario que ingrese el código de 6 dígitos que recibió."
+        return f"📱 Se ha enviado un código de verificación. Por favor, pide al usuario que ingrese el código de 6 dígitos que recibió."
     else:
         return f"❌ {message}"
 

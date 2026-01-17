@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Annotated, Literal, Optional
 from typing_extensions import TypedDict
 import logging
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -101,13 +102,29 @@ class State(TypedDict):
 
 # --- Assistant Utility ---
 
+def _should_force_certificados_tool_call(state: State) -> bool:
+    # Only force tool calls after the user provides numeric inputs (cedula/phone/OTP).
+    if not state.get("messages"):
+        return False
+    last = state["messages"][-1]
+    if getattr(last, "type", None) != "human":
+        return False
+    content = getattr(last, "content", "") or ""
+    if isinstance(content, list):
+        return False
+    text = str(content)
+    has_otp = re.search(r"\b\d{6}\b", text) is not None
+    has_long_number = re.search(r"\b\d{8,}\b", text) is not None
+    return has_otp or has_long_number
+
 class Assistant:
     def __init__(self, runnable: Runnable, name: str = "Unknown"):
         self.runnable = runnable
         self.name = name
 
     def __call__(self, state: State, config: RunnableConfig):
-        logger.info(f"🤖 Agent '{self.name}' is processing...")
+        logger.info(f"dY- Agent '{self.name}' is processing...")
+        attempt = 0
         while True:
             result = self.runnable.invoke(state)
             if not result.tool_calls and (
@@ -117,8 +134,19 @@ class Assistant:
             ):
                 messages = state["messages"] + [("user", "Respond with a real output.")]
                 state = {**state, "messages": messages}
+            elif self.name == "Certificados Agent" and _should_force_certificados_tool_call(state):
+                # Force tool usage when user already provided numeric data or OTP code.
+                messages = state["messages"] + [
+                    ("user", "Use the certificate tools to validate the OTP flow before replying.")
+                ]
+                state = {**state, "messages": messages}
             else:
                 break
+
+            attempt += 1
+            if attempt >= 2:
+                break
+
         
         # Log tool calls if any
         if result.tool_calls:
@@ -292,22 +320,22 @@ certificados_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Eres el especialista en Certificados de COOTRADECUN. Tu trabajo es generar certificados oficiales "
-            "para los asociados, PERO SOLO después de verificar su identidad mediante OTP.\n\n"
-            "**FLUJO OBLIGATORIO para generar certificados:**\n"
-            "1. PRIMERO: Solicita al usuario su número de cédula y teléfono.\n"
-            "2. SEGUNDO: Usa la herramienta `solicitar_otp` con la cédula y teléfono.\n"
-            "3. TERCERO: Pide al usuario que ingrese el código de 6 dígitos que recibió por WhatsApp.\n"
-            "4. CUARTO: Usa la herramienta `verificar_codigo_otp` con la cédula y el código.\n"
-            "5. QUINTO: Si la verificación es exitosa, usa `generar_certificado_tributario`.\n\n"
-            "**IMPORTANTE:**\n"
-            "- NUNCA generes un certificado sin verificar el OTP primero.\n"
-            "- Si el usuario proporciona un código incorrecto, permítele intentar de nuevo.\n"
-            "- El número de teléfono debe ser colombiano (puede ser con o sin +57).\n\n"
-            "**Tipos de certificados disponibles:**\n"
-            "- Certificado Tributario (para declaración de renta)\n"
-            "- Certificado de Aportes\n"
-            "- Certificado de Paz y Salvo\n\n"
+            "Eres el especialista en Certificados de COOTRADECUN.\n\n"
+            "⚠️ **REGLA CRÍTICA - PROHIBIDO PEDIR TELÉFONO** ⚠️\n"
+            "NUNCA, BAJO NINGUNA CIRCUNSTANCIA, pidas el número de teléfono celular al usuario.\n"
+            "El sistema envía el OTP automáticamente a un número registrado.\n"
+            "Solo debes pedir la CÉDULA, nada más.\n\n"
+            "**FLUJO OBLIGATORIO:**\n"
+            "1. Pide SOLO el número de cédula al usuario.\n"
+            "2. Cuando tengas la cédula, usa `solicitar_otp` (solo con la cédula).\n"
+            "3. Pide el código de 6 dígitos que el usuario recibió por SMS.\n"
+            "4. Verifica con `verificar_codigo_otp`.\n"
+            "5. Si es exitoso, genera el certificado con `generar_certificado_tributario`.\n\n"
+            "**Ejemplo de respuesta correcta:**\n"
+            "'Para generar tu certificado tributario, por favor indícame tu número de cédula.'\n\n"
+            "**Ejemplo de respuesta INCORRECTA (NO HAGAS ESTO):**\n"
+            "'Por favor indícame tu cédula y tu número de teléfono' ← ESTO ESTÁ PROHIBIDO\n\n"
+            "Tipos de certificados: Tributario, Aportes, Paz y Salvo.\n"
             "Si el usuario cambia de tema, usa CompleteOrEscalate.\n"
             "\nCurrent time: {time}."
         ),
@@ -325,7 +353,29 @@ builder = StateGraph(State)
 
 # Primary Assistant Node
 builder.add_node("primary_assistant", Assistant(primary_runnable, name="Primary Assistant"))
-builder.add_edge(START, "primary_assistant")
+def route_from_start(state: State):
+    # Resume the last dialog if it exists; otherwise go to primary assistant.
+    # When resuming, go directly to the agent node (not entry node) because
+    # entry nodes expect a tool_call_id from the previous message.
+    stack = state.get("dialog_state") or []
+    if stack:
+        last = stack[-1]
+        # Go directly to the agent, not the entry node
+        if last == "certificados":
+            return "certificados"
+        if last == "atencion_asociado":
+            return "atencion_asociado"
+        if last == "nominas":
+            return "nominas"
+        if last == "vivienda":
+            return "vivienda"
+    return "primary_assistant"
+
+builder.add_conditional_edges(
+    START,
+    route_from_start,
+    ["primary_assistant", "atencion_asociado", "nominas", "vivienda", "certificados"],
+)
 
 # --- Specialized Workflows ---
 

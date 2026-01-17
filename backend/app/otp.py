@@ -23,7 +23,7 @@ def is_twilio_configured() -> bool:
 
 def send_otp(phone_number: str) -> Tuple[bool, str]:
     """
-    Envía un código OTP via WhatsApp usando Twilio Verify.
+    Envía un código OTP via SMS usando Twilio Verify.
     
     Args:
         phone_number: Número de teléfono en formato E.164 (ej: +573001234567)
@@ -44,18 +44,27 @@ def send_otp(phone_number: str) -> Tuple[bool, str]:
             .services(TWILIO_VERIFY_SERVICE_SID) \
             .verifications.create(
                 to=phone_number,
-                channel="whatsapp"
+                channel="sms"
             )
         
         if verification.status == "pending":
             logger.info(f"OTP sent successfully to {phone_number[-4:]}")
-            return True, f"Código de verificación enviado por WhatsApp al número terminado en {phone_number[-4:]}"
+            return True, f"Código de verificación enviado por SMS al número terminado en {phone_number[-4:]}"
         else:
             logger.error(f"OTP send failed with status: {verification.status}")
             return False, f"Error al enviar el código: {verification.status}"
             
     except Exception as e:
-        logger.error(f"Error sending OTP: {str(e)}")
+        error_msg = f"Error sending OTP to {phone_number}: {type(e).__name__}: {str(e)}"
+        print(f"🔴 TWILIO ERROR: {error_msg}")  # Direct print for visibility
+        logger.error(error_msg)
+        # Si es un error de Twilio, mostrar más detalles
+        if hasattr(e, 'code'):
+            print(f"🔴 Twilio error code: {e.code}")
+            logger.error(f"Twilio error code: {e.code}")
+        if hasattr(e, 'msg'):
+            print(f"🔴 Twilio error message: {e.msg}")
+            logger.error(f"Twilio error message: {e.msg}")
         return False, f"Error al enviar el código de verificación: {str(e)}"
 
 

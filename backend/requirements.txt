@@ -10,3 +10,8 @@ faiss-cpu
 python-dotenv
 tiktoken
 twilio
+# PDF Generation
+reportlab
+pillow
+# GCP Services
+google-cloud-storage

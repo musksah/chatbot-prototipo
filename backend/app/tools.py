@@ -17,6 +17,14 @@ class ToVivienda(BaseModel):
     """Transfers the conversation to the Housing specialist."""
     request: str = Field(description="The user's specific query or need related to housing projects or credits.")
 
+class ToConvenios(BaseModel):
+    """Transfers the conversation to the Agreements/Partnerships specialist."""
+    request: str = Field(description="The user's specific query about partner companies, discounts, benefits, or commercial agreements.")
+
+class ToCartera(BaseModel):
+    """Transfers the conversation to the Loans/Portfolio specialist."""
+    request: str = Field(description="The user's specific query about loans, credits, debt status, payments, or portfolio management.")
+
 class CompleteOrEscalate(BaseModel):
     """A tool to mark the current task as completed and/or to escalate control of the dialog to the main assistant,
     who can re-route the dialog based on the user's needs."""
@@ -65,6 +73,24 @@ def consultar_vivienda(query: str):
     retrievers = get_retrievers()
     if "vivienda" in retrievers:
         docs = retrievers["vivienda"].invoke(query)
+        return "\n\n".join([d.page_content for d in docs])
+    return "No information available."
+
+@tool
+def consultar_convenios(query: str):
+    """Useful to answer questions about partner companies, commercial agreements, discounts, and benefits for associates."""
+    retrievers = get_retrievers()
+    if "convenios" in retrievers:
+        docs = retrievers["convenios"].invoke(query)
+        return "\n\n".join([d.page_content for d in docs])
+    return "No information available."
+
+@tool
+def consultar_cartera(query: str):
+    """Useful to answer questions about loans, credits, debt status, payment plans, and portfolio management."""
+    retrievers = get_retrievers()
+    if "cartera" in retrievers:
+        docs = retrievers["cartera"].invoke(query)
         return "\n\n".join([d.page_content for d in docs])
     return "No information available."
 
@@ -157,46 +183,82 @@ def verificar_codigo_otp(cedula: str, codigo: str) -> str:
 @tool
 def generar_certificado_tributario(cedula: str) -> str:
     """
-    Genera el certificado tributario para el usuario autenticado.
+    Genera el certificado tributario en formato PDF para el usuario autenticado.
     SOLO usar después de que el usuario haya sido verificado exitosamente con OTP.
+    
+    El certificado se genera como PDF y se sube a Google Cloud Storage,
+    retornando una URL de descarga que expira en 24 horas.
     
     Args:
         cedula: Número de cédula del usuario autenticado
     
     Returns:
-        El certificado tributario formateado
+        Mensaje con el enlace de descarga del certificado PDF
     """
+    import logging
+    from datetime import datetime
+    
+    logger = logging.getLogger(__name__)
+    
     # Check if user is verified
     if cedula not in _otp_state or not _otp_state[cedula].get("verified", False):
         return "❌ El usuario no ha sido verificado. Debes solicitar y verificar el OTP primero."
     
-    # Generate fake certificate (in production, this would call a real API)
-    cert = CERTIFICADO_TRIBUTARIO_FAKE.copy()
-    cert["cedula"] = cedula  # Use the actual cedula provided
-    
-    # Format the certificate
-    certificate_text = f"""
-📄 **CERTIFICADO TRIBUTARIO - AÑO {cert['año_gravable']}**
-═══════════════════════════════════════════════
+    try:
+        # Import PDF and GCS modules
+        from .pdf_generator import generar_certificado_tributario_pdf
+        from .gcs_storage import upload_and_get_signed_url, save_pdf_locally, is_gcs_configured
+        
+        # Get certificate data (in production, this would call a real API/WebService)
+        cert = CERTIFICADO_TRIBUTARIO_FAKE.copy()
+        cert["cedula"] = cedula
+        
+        # Generate PDF
+        pdf_buffer = generar_certificado_tributario_pdf(cert)
+        
+        # Create filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"certificado_tributario_{cedula}_{timestamp}"
+        
+        # Try to upload to GCS, fallback to local storage
+        if is_gcs_configured():
+            success, result = upload_and_get_signed_url(
+                pdf_buffer,
+                filename,
+                folder="certificados_tributarios"
+            )
+            
+            if success:
+                # Clear OTP state
+                del _otp_state[cedula]
+                
+                logger.info(f"Certificado tributario generado y subido a GCS para cédula {cedula}")
+                
+                return (
+                    f"¡Tu certificado tributario ha sido generado con éxito! ✅\n\n"
+                    f"Haz clic en el botón para descargarlo:\n\n"
+                    f"{result}\n\n"
+                    f"⏰ Este enlace estará disponible por 24 horas."
+                )
+            else:
+                logger.warning(f"Error subiendo a GCS, usando almacenamiento local: {result}")
+        
+        # Fallback: save locally
+        filepath = save_pdf_locally(pdf_buffer, filename)
+        
+        # Clear OTP state
+        del _otp_state[cedula]
+        
+        logger.info(f"Certificado tributario generado localmente para cédula {cedula}")
+        
+        return (
+            f"✅ **Certificado Tributario generado exitosamente**\n\n"
+            f"📄 El archivo PDF se ha generado correctamente.\n"
+            f"📂 Ubicación: `{filepath}`\n\n"
+            f"_Nota: Para obtener una URL de descarga, configure Google Cloud Storage._"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generando certificado tributario: {e}")
+        return f"❌ Error al generar el certificado: {str(e)}"
 
-**Nombre:** {cert['nombre']}
-**Cédula:** {cert['cedula']}
-
-| Concepto | Valor |
-|----------|-------|
-| Ingresos Laborales | ${cert['ingresos_laborales']:,.0f} |
-| Aportes AFP | -${cert['aportes_afp']:,.0f} |
-| Aportes Salud | -${cert['aportes_salud']:,.0f} |
-| Aportes Cooperativa | -${cert['aportes_cooperativa']:,.0f} |
-| Retención en Fuente | -${cert['retencion_fuente']:,.0f} |
-
-═══════════════════════════════════════════════
-**TOTAL CERTIFICADO:** ${cert['total_certificado']:,.0f}
-
-_Este certificado es válido para efectos de la declaración de renta del año gravable {cert['año_gravable']}._
-"""
-    
-    # Clear the OTP state after generating certificate
-    del _otp_state[cedula]
-    
-    return certificate_text

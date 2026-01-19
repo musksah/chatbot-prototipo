@@ -74,6 +74,8 @@ def load_and_index_docs(docs_dir: str):
     associado_docs = []
     nominas_docs = []
     vivienda_docs = []
+    convenios_docs = []
+    cartera_docs = []
     
     # Load specific files
     if os.path.exists(os.path.join(docs_dir, "atencion al asociado.pdf")):
@@ -90,6 +92,16 @@ def load_and_index_docs(docs_dir: str):
         loader = PyPDFLoader(os.path.join(docs_dir, "vivienda.pdf"))
         vivienda_docs.extend(loader.load())
         logger.info("RAG: Loaded vivienda.pdf (pages=%s)", len(vivienda_docs))
+    
+    if os.path.exists(os.path.join(docs_dir, "convenios.pdf")):
+        loader = PyPDFLoader(os.path.join(docs_dir, "convenios.pdf"))
+        convenios_docs.extend(loader.load())
+        logger.info("RAG: Loaded convenios.pdf (pages=%s)", len(convenios_docs))
+    
+    if os.path.exists(os.path.join(docs_dir, "cartera.pdf")):
+        loader = PyPDFLoader(os.path.join(docs_dir, "cartera.pdf"))
+        cartera_docs.extend(loader.load())
+        logger.info("RAG: Loaded cartera.pdf (pages=%s)", len(cartera_docs))
     
     # Standard text splitter for associado and nominas
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -116,6 +128,18 @@ def load_and_index_docs(docs_dir: str):
         # Increase k to get more relevant chunks since we have fewer, larger chunks
         retrievers["vivienda"] = vectorstore.as_retriever(search_kwargs={"k": 2})
         logger.info("RAG: Indexed vivienda (%s project chunks)", len(splits))
+    
+    if convenios_docs:
+        splits = text_splitter.split_documents(convenios_docs)
+        vectorstore = FAISS.from_documents(splits, embeddings)
+        retrievers["convenios"] = vectorstore.as_retriever()
+        logger.info("RAG: Indexed convenios (%s chunks)", len(splits))
+    
+    if cartera_docs:
+        splits = text_splitter.split_documents(cartera_docs)
+        vectorstore = FAISS.from_documents(splits, embeddings)
+        retrievers["cartera"] = vectorstore.as_retriever()
+        logger.info("RAG: Indexed cartera (%s chunks)", len(splits))
         
     if not retrievers:
         logger.warning("RAG: No documents indexed. Check PDF files and OCR/text extraction.")

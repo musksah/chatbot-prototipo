@@ -242,3 +242,27 @@ body {
 .messages::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8;
 }
+
+/* Download link styling */
+.download-link {
+  display: inline-block;
+  background: linear-gradient(135deg, #28a745 0%, #218838 100%);
+  color: white !important;
+  text-decoration: none;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-weight: 600;
+  margin: 10px 0;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
+}
+
+.download-link:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(40, 167, 69, 0.4);
+}
+
+.message a:not(.download-link) {
+  color: #0056b3;
+  text-decoration: underline;
+}

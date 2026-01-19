@@ -65,11 +65,15 @@ from .tools import (
     ToAtencionAsociado,
     ToNominas,
     ToVivienda,
+    ToConvenios,
+    ToCartera,
     ToCertificados,
     CompleteOrEscalate,
     consultar_atencion_asociado,
     consultar_nominas,
     consultar_vivienda,
+    consultar_convenios,
+    consultar_cartera,
     solicitar_otp,
     verificar_codigo_otp,
     generar_certificado_tributario,
@@ -94,6 +98,8 @@ class State(TypedDict):
                 "atencion_asociado",
                 "nominas",
                 "vivienda",
+                "convenios",
+                "cartera",
                 "certificados",
             ]
         ],
@@ -217,7 +223,9 @@ primary_prompt = ChatPromptTemplate.from_messages(
             "TÚ NO TIENES acceso a información detallada. Cuando tengas claridad, delega:\n"
             "- VIVIENDA (proyectos, precios, créditos hipotecarios, Pedregal, Rancho Grande) → USA ToVivienda\n"
             "- NÓMINAS (desprendibles, pagos, libranzas) → USA ToNominas\n"
-            "- ASOCIACIÓN (requisitos, auxilios, convenios) → USA ToAtencionAsociado\n"
+            "- ASOCIACIÓN (requisitos, auxilios, beneficios) → USA ToAtencionAsociado\n"
+            "- CONVENIOS (empresas aliadas, descuentos, beneficios comerciales) → USA ToConvenios\n"
+            "- CARTERA (créditos, préstamos, estado de deuda, saldos) → USA ToCartera\n"
             "- CERTIFICADOS (certificado tributario, certificado de aportes, paz y salvo) → USA ToCertificados\n\n"
             "**REGLA DE TEMAS NO RELACIONADOS**:\n"
             "Si el usuario pregunta sobre temas NO relacionados con COOTRADECUN (recetas, clima, deportes, etc.), "
@@ -233,7 +241,7 @@ primary_prompt = ChatPromptTemplate.from_messages(
     ]
 ).partial(time=datetime.now)
 
-primary_tools = [ToAtencionAsociado, ToNominas, ToVivienda, ToCertificados]
+primary_tools = [ToAtencionAsociado, ToNominas, ToVivienda, ToConvenios, ToCartera, ToCertificados]
 primary_runnable = primary_prompt | llm.bind_tools(primary_tools)
 
 # 2. Atencion Asociado Agent
@@ -315,7 +323,65 @@ vivienda_prompt = ChatPromptTemplate.from_messages(
 vivienda_tools = [consultar_vivienda, CompleteOrEscalate]
 vivienda_runnable = vivienda_prompt | llm.bind_tools(vivienda_tools)
 
-# 5. Certificados Agent (with OTP authentication)
+# 5. Convenios Agent
+convenios_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres el experto en Convenios y Alianzas de COOTRADECUN.\n\n"
+            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
+            "1. SIEMPRE debes usar la herramienta `consultar_convenios` ANTES de responder CUALQUIER pregunta.\n"
+            "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
+            "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
+            "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n"
+            "5. Si la herramienta no retorna información sobre lo que pregunta el usuario, di: 'No encontré información sobre eso en nuestros convenios. ¿Puedo ayudarte con algo más?'\n"
+            "6. NUNCA inventes nombres de empresas, descuentos o beneficios.\n\n"
+            "Áreas de especialidad:\n"
+            "- Empresas aliadas y convenios comerciales.\n"
+            "- Descuentos y beneficios para asociados.\n"
+            "- Servicios de salud, educación, recreación, exequiales.\n"
+            "- Condiciones y requisitos de los convenios.\n\n"
+            "Si el usuario cambia de tema o pregunta sobre créditos, vivienda, nómina u otros temas, usa CompleteOrEscalate.\n"
+            "\nCurrent time: {time}."
+        ),
+        ("placeholder", "{messages}"),
+    ]
+).partial(time=datetime.now)
+
+convenios_tools = [consultar_convenios, CompleteOrEscalate]
+convenios_runnable = convenios_prompt | llm.bind_tools(convenios_tools)
+
+# 6. Cartera Agent
+cartera_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres el experto en Cartera y Créditos de COOTRADECUN.\n\n"
+            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
+            "1. SIEMPRE debes usar la herramienta `consultar_cartera` ANTES de responder CUALQUIER pregunta.\n"
+            "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
+            "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
+            "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n"
+            "5. Si la herramienta no retorna información sobre lo que pregunta el usuario, di: 'No encontré información sobre eso. ¿Puedo ayudarte con algo más sobre créditos o cartera?'\n"
+            "6. NUNCA inventes tasas de interés, montos, plazos o condiciones de créditos.\n\n"
+            "Áreas de especialidad:\n"
+            "- Tipos de créditos y préstamos disponibles.\n"
+            "- Estado de cartera y saldos.\n"
+            "- Planes de pago y refinanciación.\n"
+            "- Tasas de interés y plazos.\n"
+            "- Requisitos para solicitar créditos.\n\n"
+            "Para información específica de saldos del usuario, recuerda que debe consultar el Portal Transaccional.\n"
+            "Si el usuario cambia de tema o pregunta sobre vivienda, nómina, convenios u otros temas, usa CompleteOrEscalate.\n"
+            "\nCurrent time: {time}."
+        ),
+        ("placeholder", "{messages}"),
+    ]
+).partial(time=datetime.now)
+
+cartera_tools = [consultar_cartera, CompleteOrEscalate]
+cartera_runnable = cartera_prompt | llm.bind_tools(cartera_tools)
+
+# 7. Certificados Agent (with OTP authentication)
 certificados_prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -369,12 +435,16 @@ def route_from_start(state: State):
             return "nominas"
         if last == "vivienda":
             return "vivienda"
+        if last == "convenios":
+            return "convenios"
+        if last == "cartera":
+            return "cartera"
     return "primary_assistant"
 
 builder.add_conditional_edges(
     START,
     route_from_start,
-    ["primary_assistant", "atencion_asociado", "nominas", "vivienda", "certificados"],
+    ["primary_assistant", "atencion_asociado", "nominas", "vivienda", "convenios", "cartera", "certificados"],
 )
 
 # --- Specialized Workflows ---
@@ -418,6 +488,8 @@ builder.add_edge("leave_skill", "primary_assistant")
 create_workflow("atencion_asociado", asociado_runnable, asociado_tools, "atencion_asociado")
 create_workflow("nominas", nominas_runnable, nominas_tools, "nominas")
 create_workflow("vivienda", vivienda_runnable, vivienda_tools, "vivienda")
+create_workflow("convenios", convenios_runnable, convenios_tools, "convenios")
+create_workflow("cartera", cartera_runnable, cartera_tools, "cartera")
 create_workflow("certificados", certificados_runnable, certificados_tools, "certificados")
 
 # Primary Routing Logic
@@ -430,6 +502,10 @@ def route_primary(state: State):
             return "enter_nominas"
         elif tool_calls[0]["name"] == ToVivienda.__name__:
             return "enter_vivienda"
+        elif tool_calls[0]["name"] == ToConvenios.__name__:
+            return "enter_convenios"
+        elif tool_calls[0]["name"] == ToCartera.__name__:
+            return "enter_cartera"
         elif tool_calls[0]["name"] == ToCertificados.__name__:
             return "enter_certificados"
     return END
@@ -437,7 +513,7 @@ def route_primary(state: State):
 builder.add_conditional_edges(
     "primary_assistant",
     route_primary,
-    ["enter_atencion_asociado", "enter_nominas", "enter_vivienda", "enter_certificados", END]
+    ["enter_atencion_asociado", "enter_nominas", "enter_vivienda", "enter_convenios", "enter_cartera", "enter_certificados", END]
 )
 
 graph = builder.compile()

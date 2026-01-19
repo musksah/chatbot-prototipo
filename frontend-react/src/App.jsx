@@ -19,8 +19,37 @@ function parseMarkdown(text) {
     return line
   })
   text = lines.join('<br>')
+
+  // Convert bold text
   text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+
+  // Convert italic text
   text = text.replace(/\*(.*?)\*/g, '<em>$1</em>')
+
+  // Handle markdown links: [text](URL) - convert to proper HTML links
+  text = text.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer" class="download-link">📄 $1</a>'
+  )
+
+  // Convert standalone GCS URLs to clickable links
+  text = text.replace(
+    /(?<!href=")(https?:\/\/storage\.googleapis\.com\/[^\s<\)]+)/g,
+    '<a href="$1" target="_blank" rel="noopener noreferrer" class="download-link">📄 Haz clic aquí para descargar</a>'
+  )
+
+  // Convert other standalone URLs to links
+  text = text.replace(
+    /(?<!href=")(https?:\/\/(?!storage\.googleapis\.com)[^\s<\)]+)/g,
+    '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+  )
+
+  // Clean up any leftover brackets or parentheses around links
+  text = text.replace(/\[\s*(<a [^>]+>[^<]+<\/a>)\s*\]\s*\(/g, '$1')
+  text = text.replace(/\)\s*$/gm, '')
+  text = text.replace(/\[\s*📥[^<\]]*\]\s*\(/g, '')
+  text = text.replace(/\(\s*$/gm, '')
+
   return text
 }
 
@@ -35,9 +64,12 @@ function App() {
     {
       type: 'bot',
       content: `¡Hola! 👋 Soy el asistente virtual de <strong>COOTRADECUN</strong>. Estoy aquí para ayudarte con:<br><br>
-📋 <strong>Asociación:</strong> Requisitos, auxilios y convenios<br>
+📋 <strong>Asociación:</strong> Requisitos, auxilios y beneficios<br>
 💰 <strong>Nóminas:</strong> Desprendibles, pagos y libranzas<br>
-🏠 <strong>Vivienda:</strong> Créditos y proyectos de vivienda<br><br>
+🏠 <strong>Vivienda:</strong> Proyectos y créditos de vivienda<br>
+🤝 <strong>Convenios:</strong> Empresas aliadas y descuentos<br>
+💳 <strong>Cartera:</strong> Créditos, préstamos y saldos<br>
+📄 <strong>Certificados:</strong> Tributarios, aportes y paz y salvo<br><br>
 ¿En qué puedo asistirte hoy?`
     }
   ])
@@ -128,9 +160,12 @@ function App() {
     setMessages([{
       type: 'bot',
       content: `¡Hola! 👋 Soy el asistente virtual de <strong>COOTRADECUN</strong>. Estoy aquí para ayudarte con:<br><br>
-📋 <strong>Asociación:</strong> Requisitos, auxilios y convenios<br>
+📋 <strong>Asociación:</strong> Requisitos, auxilios y beneficios<br>
 💰 <strong>Nóminas:</strong> Desprendibles, pagos y libranzas<br>
-🏠 <strong>Vivienda:</strong> Créditos y proyectos de vivienda<br><br>
+🏠 <strong>Vivienda:</strong> Proyectos y créditos de vivienda<br>
+🤝 <strong>Convenios:</strong> Empresas aliadas y descuentos<br>
+💳 <strong>Cartera:</strong> Créditos, préstamos y saldos<br>
+📄 <strong>Certificados:</strong> Tributarios, aportes y paz y salvo<br><br>
 ¿En qué puedo asistirte hoy?`
     }])
   }

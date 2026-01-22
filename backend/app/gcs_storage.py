@@ -96,6 +96,9 @@ def generate_signed_url(
     """
     Genera una URL firmada para descargar un archivo de GCS.
     
+    En Cloud Run con ADC (Application Default Credentials), usa IAM-based signing
+    que requiere el rol 'roles/iam.serviceAccountTokenCreator' en el Service Account.
+    
     Args:
         blob_name: Nombre completo del blob (incluyendo carpeta)
         expiration_hours: Horas hasta que expire la URL (default: 24)
@@ -104,6 +107,9 @@ def generate_signed_url(
         Tuple[bool, str]: (éxito, URL firmada o mensaje de error)
     """
     try:
+        import google.auth
+        from google.auth.transport import requests as auth_requests
+        
         client = _get_storage_client()
         bucket = client.bucket(GCS_BUCKET_NAME)
         blob = bucket.blob(blob_name)
@@ -114,11 +120,32 @@ def generate_signed_url(
         hours = expiration_hours or SIGNED_URL_EXPIRATION_HOURS
         expiration = timedelta(hours=hours)
         
+        # Get credentials
+        credentials, project = google.auth.default()
+        
+        # Refresh credentials to ensure we have a valid token
+        auth_request = auth_requests.Request()
+        credentials.refresh(auth_request)
+        
+        # Get service account email - try from credentials first, then env var
+        sa_email = getattr(credentials, 'service_account_email', None)
+        if not sa_email or sa_email == 'default':
+            sa_email = os.getenv("SERVICE_ACCOUNT_EMAIL")
+        
+        if not sa_email:
+            return False, "No se pudo determinar el email de la cuenta de servicio. Configure SERVICE_ACCOUNT_EMAIL."
+        
+        logger.info(f"Generando URL firmada con SA: {sa_email}, token exists: {bool(credentials.token)}")
+        
+        # Use IAM-based signing with service_account_email and access_token
+        # This invokes the IAM signBlob API under the hood
         url = blob.generate_signed_url(
             version="v4",
             expiration=expiration,
             method="GET",
-            response_disposition=f'attachment; filename="{blob_name.split("/")[-1]}"'
+            response_disposition=f'attachment; filename="{blob_name.split("/")[-1]}"',
+            service_account_email=sa_email,
+            access_token=credentials.token
         )
         
         logger.info(f"URL firmada generada para: {blob_name} (expira en {hours}h)")
@@ -127,6 +154,8 @@ def generate_signed_url(
         
     except Exception as e:
         logger.error(f"Error al generar URL firmada: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False, f"Error al generar URL: {str(e)}"
 
 

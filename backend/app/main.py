@@ -30,6 +30,55 @@ async def health_check():
 async def health():
     return {"status": "ok"}
 
+@app.get("/debug-gcs")
+async def debug_gcs():
+    import google.auth
+    from google.auth.transport import requests as auth_requests
+    from .gcs_storage import upload_and_get_signed_url
+    from . import gcs_storage
+    from io import BytesIO
+    import traceback
+    import os
+    import inspect
+    
+    debug_info = {}
+    
+    try:
+        # Check credentials
+        credentials, project = google.auth.default()
+        if not hasattr(credentials, 'service_account_email') or not credentials.service_account_email:
+            auth_request = auth_requests.Request()
+            credentials.refresh(auth_request)
+            
+        debug_info["service_account_from_auth"] = getattr(credentials, "service_account_email", "Not found")
+        debug_info["project"] = project
+        
+        # Check Env Var
+        debug_info["env_service_account_email"] = os.getenv("SERVICE_ACCOUNT_EMAIL", "MISSING_OR_EMPTY")
+        
+        # Check Source Code to verify deployment update
+        try:
+            source = inspect.getsource(gcs_storage.generate_signed_url)
+            debug_info["source_snippet"] = source[:1000] # Enough to see the fallback logic
+        except Exception as source_e:
+             debug_info["source_error"] = str(source_e)
+        
+        # Try upload
+        dummy_pdf = BytesIO(b"PDF de prueba para debugging")
+        success, result = upload_and_get_signed_url(dummy_pdf, "debug_test", expiration_hours=1)
+        
+        return {
+            "success": success,
+            "result": result,
+            "debug_info": debug_info
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "debug_info": debug_info
+        }
+
 class ChatRequest(BaseModel):
     message: str
     thread_id: Optional[str] = None

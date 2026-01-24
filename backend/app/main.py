@@ -87,21 +87,59 @@ class ChatResponse(BaseModel):
     messages: List[Dict[str, Any]]
     thread_id: str
 
-# In-memory storage for simple persisting of non-checkpointer state if needed.
-# For LangGraph checkpointer, we typically need a checkpointer (like MemorySaver/Sqlite).
-# For this basic implementation, we will rely on LangGraph's checkpointer if we configured one,
-# OR we will just keeping state in memory if we passed a checkpointer.
-# Wait, in agent.py I did `builder.compile()`. I didn't pass a checkpointer.
-# For a real chatbot, we NEED a checkpointer to remember conversation history.
-# I will modify agent.py to use MemorySaver in the next step or patch it here.
-# Actually, I'll update this file to use a global checkpointer or pass it to compile.
+# --- Checkpointer Configuration ---
+# PostgresSaver for production (multi-instance Cloud Run)
+# MemorySaver as fallback for local dev without database
 
-# Let's fix agent.py compilation in a separate step or here.
-# For now, let's assume we re-compile it with a checkpointer or I make a singleton.
 
-from langgraph.checkpoint.memory import MemorySaver
-checkpointer = MemorySaver()
-# Re-compiling the graph here to ensure we have memory
+import os
+import logging
+
+# Configure checkpointer based on DATABASE_URL availability
+DATABASE_URL = os.getenv("DATABASE_URL")
+logger = logging.getLogger(__name__)
+
+checkpointer = None
+
+if DATABASE_URL:
+    # Use PostgreSQL for multi-instance persistence (Cloud Run)
+    # NOTE: Tables must be created manually - see backend/docs/checkpoint_tables.sql
+    try:
+        from psycopg_pool import ConnectionPool
+        from langgraph.checkpoint.postgres import PostgresSaver
+        
+        # Create a connection pool with reconnection handling
+        # - max_lifetime: close connections after 1 hour to avoid stale connections
+        # - reconnect_timeout: time to wait for reconnection
+        # - check: validate connections before borrowing from pool
+        pool = ConnectionPool(
+            conninfo=DATABASE_URL,
+            max_size=10,
+            min_size=1,
+            max_lifetime=3600,  # 1 hour - prevents stale connections after inactivity
+            reconnect_timeout=30,
+            check=ConnectionPool.check_connection,  # Validate connection is alive
+        )
+        
+        # Create PostgresSaver with the pool (tables must exist)
+        checkpointer = PostgresSaver(pool)
+        
+        logger.info("✅ PostgresSaver inicializado correctamente con Cloud SQL")
+    except Exception as e:
+        logger.error(f"❌ Error al conectar PostgresSaver: {e}")
+        logger.warning("⚠️ Fallback a MemorySaver (no persistente)")
+        checkpointer = None
+
+if checkpointer is None:
+    # Fallback to in-memory for local dev without database
+    from langgraph.checkpoint.memory import MemorySaver
+    checkpointer = MemorySaver()
+    if DATABASE_URL:
+        logger.warning("⚠️ PostgreSQL falló. Usando MemorySaver como fallback.")
+    else:
+        logger.warning("⚠️ DATABASE_URL no configurado. Usando MemorySaver (no persistente entre instancias).")
+
+# Re-compile graph with checkpointer
 from .agent import builder
 graph_with_memory = builder.compile(checkpointer=checkpointer)
 

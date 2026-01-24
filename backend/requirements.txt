@@ -15,3 +15,10 @@ reportlab
 pillow
 # GCP Services
 google-cloud-storage
+
+# PostgreSQL Checkpointer for LangGraph (persistent conversation state)
+langgraph-checkpoint-postgres
+psycopg[binary]
+
+# Conversation memory management
+langmem

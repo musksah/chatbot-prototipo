@@ -59,7 +59,9 @@ from langgraph.prebuilt import tools_condition, ToolNode
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableConfig
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, HumanMessage, AIMessage
+from langchain_core.messages.utils import count_tokens_approximately
+from langmem.short_term import SummarizationNode, RunningSummary
 
 from .tools import (
     ToAtencionAsociado,
@@ -105,6 +107,8 @@ class State(TypedDict):
         ],
         update_dialog_stack,
     ]
+    # Context for conversation summarization (prevents slow responses on long chats)
+    context: dict[str, RunningSummary]
 
 # --- Assistant Utility ---
 
@@ -204,38 +208,52 @@ def pop_dialog_state(state: State) -> dict:
 
 llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview") # Using Gemini for routing and reasoning
 
-# 1. Primary Assistant
+# Intent-Preserving Summarization Prompt
+SUMMARIZATION_PROMPT = """Tu objetivo es comprimir la conversación sin perder los 'triggers' de enrutamiento.
+
+Formato de Resumen Obligatorio:
+- **Contexto General**: (Breve descripción del tema principal de la conversación).
+- **Entidades Clave**: (Nombres de proyectos, números de cédula, IDs, leyes, términos técnicos mencionados).
+- **Última Intención Identificada**: (Describe la acción específica que el usuario intentó realizar justo antes de este resumen).
+
+Restricciones:
+- NO utilices frases vagas como 'el usuario interactuó con el bot'.
+- Mantén los términos técnicos exactos (ej: 'Rancho Grande', 'certificado tributario', 'OTP').
+- Preserva nombres de herramientas o agentes mencionados.
+"""
+
+# 1. Primary Assistant (Senior Router Logic)
 primary_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Eres el asistente virtual principal de COOTRADECUN (Cooperativa Multiactiva de Trabajadores de la Educación). "
-            "Tu objetivo es ser amable, profesional y eficiente.\n\n"
-            "**REGLA DE CLARIFICACIÓN** (IMPORTANTE):\n"
-            "Si la pregunta del usuario es ambigua, incompleta o no está claro a qué área pertenece:\n"
-            "- HAZ PREGUNTAS DE SEGUIMIENTO para entender mejor qué necesita.\n"
-            "- Ejemplos de preguntas clarificadoras:\n"
-            "  • '¿Te refieres a información sobre proyectos de vivienda o sobre créditos?'\n"
-            "  • '¿Necesitas ayuda con trámites de asociación o con pagos?'\n"
-            "  • '¿Podrías darme más detalles sobre lo que necesitas?'\n"
-            "- NO delegues ni respondas hasta tener claridad sobre la intención del usuario.\n\n"
-            "**REGLA DE DELEGACIÓN** (una vez clara la intención):\n"
-            "TÚ NO TIENES acceso a información detallada. Cuando tengas claridad, delega:\n"
-            "- VIVIENDA (proyectos, precios, créditos hipotecarios, Pedregal, Rancho Grande) → USA ToVivienda\n"
-            "- NÓMINAS (desprendibles, pagos, libranzas) → USA ToNominas\n"
-            "- ASOCIACIÓN (requisitos, auxilios, beneficios) → USA ToAtencionAsociado\n"
-            "- CONVENIOS (empresas aliadas, descuentos, beneficios comerciales) → USA ToConvenios\n"
-            "- CARTERA (créditos, préstamos, estado de deuda, saldos) → USA ToCartera\n"
-            "- CERTIFICADOS (certificado tributario, certificado de aportes, paz y salvo) → USA ToCertificados\n\n"
-            "**REGLA DE TEMAS NO RELACIONADOS**:\n"
-            "Si el usuario pregunta sobre temas NO relacionados con COOTRADECUN (recetas, clima, deportes, etc.), "
+            "Actúa como un Orquestador Técnico de alta precisión para COOTRADECUN. "
+            "Tu tarea es derivar al sub-agente correcto basándote en el estado actual.\n\n"
+            
+            "**PRIORIDAD DE EVALUACIÓN:**\n"
+            "1. **Mensajes Recientes (Estado Raw)**: Analiza los últimos 2 mensajes del historial. "
+            "Busca verbos de acción y entidades técnicas (ej. 'buscar', 'consultar', 'certificado', 'crédito'). "
+            "Si hay una intención clara aquí, IGNORA contradicciones del resumen.\n"
+            "2. **Contexto de Resumen**: Úsalo SOLO para entender el 'hilo conductor' o referencias a pronombres "
+            "(ej. si el usuario dice 'hazlo', el resumen te dirá qué es 'lo').\n\n"
+            
+            "**REGLAS DE ENRUTAMIENTO:**\n"
+            "- Términos de VIVIENDA (proyectos, precios, Pedregal, Rancho Grande, hipoteca) → ToVivienda\n"
+            "- Términos de NÓMINAS (desprendibles, pagos, libranzas, deducciones) → ToNominas\n"
+            "- Términos de ASOCIACIÓN (requisitos, auxilios, beneficios, afiliación) → ToAtencionAsociado\n"
+            "- Términos de CONVENIOS (empresas aliadas, descuentos comerciales) → ToConvenios\n"
+            "- Términos de CARTERA (créditos, préstamos, deuda, saldos) → ToCartera\n"
+            "- Términos de CERTIFICADOS (tributario, aportes, paz y salvo, OTP) → ToCertificados\n"
+            "- Cambio radical de tema o intención ambigua → Hacer pregunta clarificadora\n\n"
+            
+            "**REGLA DE CLARIFICACIÓN:**\n"
+            "Si la pregunta es ambigua o incompleta, HAZ PREGUNTAS DE SEGUIMIENTO antes de delegar.\n\n"
+            
+            "**REGLA DE TEMAS NO RELACIONADOS:**\n"
+            "Si el usuario pregunta sobre temas NO relacionados con COOTRADECUN, "
             "responde: 'Lo siento, solo puedo ayudarte con temas relacionados con COOTRADECUN.'\n\n"
-            "Tus tareas directas:\n"
-            "1. Saludar cordialmente.\n"
-            "2. Hacer preguntas clarificadoras si hay ambigüedad.\n"
-            "3. Responder preguntas MUY generales ('¿Qué es Cootradecun?').\n"
-            "4. DELEGAR cuando tengas certeza de la intención del usuario.\n"
-            "\nCurrent time: {time}."
+            
+            "Current time: {time}."
         ),
         ("placeholder", "{messages}"),
     ]
@@ -259,7 +277,17 @@ asociado_prompt = ChatPromptTemplate.from_messages(
             "- Requisitos de asociación y documentos necesarios.\n"
             "- Auxilios: solidaridad, discapacidad, incapacidad, estudios.\n"
             "- Convenios: parques, educación, salud, exequiales.\n\n"
-            "Si el usuario cambia de tema a vivienda o pagos, usa CompleteOrEscalate.\n"
+            "**REGLA DE ESCALACIÓN** (OBLIGATORIA):\n"
+            "Si el usuario pregunta sobre CUALQUIERA de estos temas, debes usar CompleteOrEscalate INMEDIATAMENTE:\n"
+            "- CERTIFICADOS (tributario, aportes, paz y salvo, OTP) → ESCALAR\n"
+            "- VIVIENDA (proyectos, Pedregal, hipotecas) → ESCALAR\n"
+            "- NÓMINAS (desprendibles, pagos, libranzas) → ESCALAR\n"
+            "- CARTERA (créditos, préstamos, saldos) → ESCALAR\n"
+            "NO intentes responder sobre estos temas, ESCALA inmediatamente.\n\n"
+            "**REGLA DE FORMATO** (IMPORTANTE):\n"
+            "- Responde de forma CONCISA: máximo 3-4 puntos clave.\n"
+            "- Usa bullet points o listas, NO párrafos largos.\n"
+            "- Al final ofrece: '¿Quieres que te explique alguno con más detalle?'\n"
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -285,7 +313,9 @@ nominas_prompt = ChatPromptTemplate.from_messages(
             "- Medios de pago: PSE, Baloto (código 3898), Banco de Bogotá.\n"
             "- Libranzas y deducciones.\n\n"
             "Para saldos específicos, recuerda que el usuario debe ingresar al Portal Transaccional.\n"
-            "Si el usuario cambia de tema, usa CompleteOrEscalate.\n"
+            "**REGLA DE ESCALACIÓN**: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
+            "VIVIENDA, ASOCIACIÓN, CONVENIOS o CARTERA → usa CompleteOrEscalate INMEDIATAMENTE.\n\n"
+            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -313,7 +343,9 @@ vivienda_prompt = ChatPromptTemplate.from_messages(
             "- Proyectos: 'Rancho Grande' (Melgar), 'El Pedregal' (Fusagasugá) y 'Arayanes de Peñalisa'.\n"
             "- Crédito: Montos, plazos y tasas preferenciales.\n"
             "- Simulación: Simulador de crédito en la web.\n\n"
-            "Si el usuario cambia de tema a algo no relacionado con vivienda, usa CompleteOrEscalate.\n"
+            "**REGLA DE ESCALACIÓN**: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
+            "NÓMINAS, ASOCIACIÓN, CONVENIOS o CARTERA → usa CompleteOrEscalate INMEDIATAMENTE.\n\n"
+            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -341,7 +373,9 @@ convenios_prompt = ChatPromptTemplate.from_messages(
             "- Descuentos y beneficios para asociados.\n"
             "- Servicios de salud, educación, recreación, exequiales.\n"
             "- Condiciones y requisitos de los convenios.\n\n"
-            "Si el usuario cambia de tema o pregunta sobre créditos, vivienda, nómina u otros temas, usa CompleteOrEscalate.\n"
+            "**REGLA DE ESCALACIÓN**: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
+            "VIVIENDA, NÓMINAS, ASOCIACIÓN o CARTERA → usa CompleteOrEscalate INMEDIATAMENTE.\n\n"
+            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -371,7 +405,9 @@ cartera_prompt = ChatPromptTemplate.from_messages(
             "- Tasas de interés y plazos.\n"
             "- Requisitos para solicitar créditos.\n\n"
             "Para información específica de saldos del usuario, recuerda que debe consultar el Portal Transaccional.\n"
-            "Si el usuario cambia de tema o pregunta sobre vivienda, nómina, convenios u otros temas, usa CompleteOrEscalate.\n"
+            "**REGLA DE ESCALACIÓN**: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
+            "VIVIENDA, NÓMINAS, ASOCIACIÓN o CONVENIOS → usa CompleteOrEscalate INMEDIATAMENTE.\n\n"
+            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -413,12 +449,31 @@ certificados_tools = [solicitar_otp, verificar_codigo_otp, generar_certificado_t
 certificados_runnable = certificados_prompt | llm.bind_tools(certificados_tools)
 
 
+# --- Summarization Node (Official LangGraph Pattern) ---
+# Uses SummarizationNode from langmem which properly handles message state
+# without breaking tool call context.
+
+# Separate LLM for summarization (without tools) to avoid Gemini ordering issues
+summarization_llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+
+summarization_node = SummarizationNode(
+    token_counter=count_tokens_approximately,
+    model=summarization_llm,
+    max_tokens=8000,              # Max tokens to keep in context
+    max_tokens_before_summary=6000,  # Trigger summarization when exceeded
+    max_summary_tokens=500,       # Max tokens for the summary itself
+)
+
 # --- Graph Construction ---
 
 builder = StateGraph(State)
 
+# Add summarization node
+builder.add_node("summarize", summarization_node)
+
 # Primary Assistant Node
 builder.add_node("primary_assistant", Assistant(primary_runnable, name="Primary Assistant"))
+
 def route_from_start(state: State):
     # Resume the last dialog if it exists; otherwise go to primary assistant.
     # When resuming, go directly to the agent node (not entry node) because
@@ -441,8 +496,10 @@ def route_from_start(state: State):
             return "cartera"
     return "primary_assistant"
 
+# START -> summarize first, then route to appropriate agent
+builder.add_edge(START, "summarize")
 builder.add_conditional_edges(
-    START,
+    "summarize",
     route_from_start,
     ["primary_assistant", "atencion_asociado", "nominas", "vivienda", "convenios", "cartera", "certificados"],
 )

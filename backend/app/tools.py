@@ -2,6 +2,26 @@ from typing import Annotated, Literal
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from .rag import get_retrievers
+import logging
+
+logger = logging.getLogger(__name__)
+
+def _invoke_retriever_with_logging(retriever_name: str, query: str) -> str:
+    """Helper that invokes a retriever and logs chunk statistics."""
+    retrievers = get_retrievers()
+    if retriever_name not in retrievers:
+        return "No information available."
+    
+    docs = retrievers[retriever_name].invoke(query)
+    
+    # Log chunk statistics
+    chunks_count = len(docs)
+    total_chars = sum(len(d.page_content) for d in docs)
+    avg_chars = total_chars // chunks_count if chunks_count > 0 else 0
+    
+    logger.info(f"📚 [RAG] {retriever_name}: query='{query[:50]}...', chunks={chunks_count}, total_chars={total_chars}, avg_chars={avg_chars}")
+    
+    return "\n\n".join([d.page_content for d in docs])
 
 # --- Transfer Tools ---
 
@@ -24,6 +44,18 @@ class ToConvenios(BaseModel):
 class ToCartera(BaseModel):
     """Transfers the conversation to the Loans/Portfolio specialist."""
     request: str = Field(description="The user's specific query about loans, credits, debt status, payments, or portfolio management.")
+
+class ToContabilidad(BaseModel):
+    """Transfers the conversation to the Accounting specialist for questions about suppliers, invoices, withholdings, and tax certificates."""
+    request: str = Field(description="The user's query about supplier registration, invoicing, withholdings, or accounting certificates.")
+
+class ToTesoreria(BaseModel):
+    """Transfers the conversation to the Treasury/Payments specialist for questions about payment methods, disbursements, and bank accounts."""
+    request: str = Field(description="The user's query about payment methods, bank accounts, disbursement times, or correspondents.")
+
+class ToCredito(BaseModel):
+    """Transfers the conversation to the Credit specialist for questions about loan types, requirements, and credit applications."""
+    request: str = Field(description="The user's query about credit types, loan requirements, credit simulation, or credit applications.")
 
 class CompleteOrEscalate(BaseModel):
     """A tool to mark the current task as completed and/or to escalate control of the dialog to the main assistant,
@@ -52,47 +84,42 @@ class CompleteOrEscalate(BaseModel):
 @tool
 def consultar_atencion_asociado(query: str):
     """Useful to answer questions about association requirements, benefits, auxiliaries, and agreements."""
-    retrievers = get_retrievers()
-    if "atencion_asociado" in retrievers:
-        docs = retrievers["atencion_asociado"].invoke(query)
-        return "\n\n".join([d.page_content for d in docs])
-    return "No information available."
+    return _invoke_retriever_with_logging("atencion_asociado", query)
 
 @tool
 def consultar_nominas(query: str):
     """Useful to answer questions about payment slips, payment channels, and payroll deductions."""
-    retrievers = get_retrievers()
-    if "nominas" in retrievers:
-        docs = retrievers["nominas"].invoke(query)
-        return "\n\n".join([d.page_content for d in docs])
-    return "No information available."
+    return _invoke_retriever_with_logging("nominas", query)
 
 @tool
 def consultar_vivienda(query: str):
     """Useful to answer questions about housing projects, credits, and simulations."""
-    retrievers = get_retrievers()
-    if "vivienda" in retrievers:
-        docs = retrievers["vivienda"].invoke(query)
-        return "\n\n".join([d.page_content for d in docs])
-    return "No information available."
+    return _invoke_retriever_with_logging("vivienda", query)
 
 @tool
 def consultar_convenios(query: str):
     """Useful to answer questions about partner companies, commercial agreements, discounts, and benefits for associates."""
-    retrievers = get_retrievers()
-    if "convenios" in retrievers:
-        docs = retrievers["convenios"].invoke(query)
-        return "\n\n".join([d.page_content for d in docs])
-    return "No information available."
+    return _invoke_retriever_with_logging("convenios", query)
 
 @tool
 def consultar_cartera(query: str):
     """Useful to answer questions about loans, credits, debt status, payment plans, and portfolio management."""
-    retrievers = get_retrievers()
-    if "cartera" in retrievers:
-        docs = retrievers["cartera"].invoke(query)
-        return "\n\n".join([d.page_content for d in docs])
-    return "No information available."
+    return _invoke_retriever_with_logging("cartera", query)
+
+@tool
+def consultar_contabilidad(query: str):
+    """Useful to answer questions about supplier registration, invoicing, withholdings, and accounting certificates."""
+    return _invoke_retriever_with_logging("contabilidad", query)
+
+@tool
+def consultar_tesoreria(query: str):
+    """Useful to answer questions about payment methods, bank accounts, disbursement times, and correspondents."""
+    return _invoke_retriever_with_logging("tesoreria", query)
+
+@tool
+def consultar_credito(query: str):
+    """Useful to answer questions about credit types, loan requirements, credit simulation, and credit applications."""
+    return _invoke_retriever_with_logging("credito", query)
 
 
 # --- Transfer Tool for Certificates ---

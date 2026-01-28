@@ -19,9 +19,10 @@ function Login({ onLogin }) {
         setIsLoading(true)
 
         // Simulated login - in production, validate against backend
-        // For demo purposes, accept any cedula with password "cootradecun"
+        // Password: "123" in development, "cootradecun2025$" in production
+        const validPassword = import.meta.env.DEV ? '123' : 'cootradecun2025$'
         setTimeout(() => {
-            if (password === 'cootradecun2025$') {
+            if (password === validPassword) {
                 const user = {
                     cedula: cedula,
                     name: 'Asociado COOTRADECUN',

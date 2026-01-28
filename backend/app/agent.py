@@ -12,45 +12,68 @@ logger = logging.getLogger(__name__)
 _token_totals_by_thread = {}
 
 def _extract_token_usage(result) -> dict:
+    """Extract token usage from Gemini response, handling different metadata formats."""
+    # Try usage_metadata directly
     if getattr(result, "usage_metadata", None):
-        return result.usage_metadata or {}
+        meta = result.usage_metadata
+        if isinstance(meta, dict):
+            return meta
+        # Handle object-style metadata
+        return {
+            "prompt_tokens": getattr(meta, "prompt_token_count", None) or getattr(meta, "input_tokens", None),
+            "completion_tokens": getattr(meta, "candidates_token_count", None) or getattr(meta, "output_tokens", None),
+            "total_tokens": getattr(meta, "total_token_count", None),
+        }
+    
+    # Fallback to response_metadata
     response_metadata = getattr(result, "response_metadata", None) or {}
-    return response_metadata.get("usage_metadata") or response_metadata.get("usage") or response_metadata.get("token_usage") or {}
+    usage = response_metadata.get("usage_metadata") or response_metadata.get("usage") or response_metadata.get("token_usage") or {}
+    
+    # Normalize field names
+    return {
+        "prompt_tokens": usage.get("prompt_token_count") or usage.get("prompt_tokens") or usage.get("input_tokens"),
+        "completion_tokens": usage.get("candidates_token_count") or usage.get("completion_tokens") or usage.get("output_tokens"),
+        "total_tokens": usage.get("total_token_count") or usage.get("total_tokens"),
+    }
 
 def _update_and_log_token_usage(thread_id: str, usage: dict) -> None:
     if not usage:
         return
-    prompt_tokens = usage.get("prompt_token_count") or usage.get("prompt_tokens")
-    completion_tokens = usage.get("candidates_token_count") or usage.get("completion_tokens")
-    total_tokens = usage.get("total_token_count") or usage.get("total_tokens")
-    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
-        total_tokens = prompt_tokens + completion_tokens
+    
+    prompt_tokens = usage.get("prompt_tokens") or 0
+    completion_tokens = usage.get("completion_tokens") or 0
+    total_tokens = usage.get("total_tokens")
+    
+    # Calculate total if not provided
+    if total_tokens is None:
+        total_tokens = prompt_tokens + completion_tokens if (prompt_tokens or completion_tokens) else 0
 
+    # Log per-request tokens
     logger.info(
-        "Gemini tokens for thread=%s: prompt=%s completion=%s total=%s",
+        "🔢 [REQUEST] thread=%s: input=%s, output=%s, request_total=%s",
         thread_id,
-        prompt_tokens,
-        completion_tokens,
+        prompt_tokens or "?",
+        completion_tokens or "?",
         total_tokens,
     )
 
+    # Update and log conversation totals
     totals = _token_totals_by_thread.setdefault(
         thread_id,
-        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "request_count": 0},
     )
-    if prompt_tokens is not None:
-        totals["prompt_tokens"] += prompt_tokens
-    if completion_tokens is not None:
-        totals["completion_tokens"] += completion_tokens
-    if total_tokens is not None:
-        totals["total_tokens"] += total_tokens
+    totals["prompt_tokens"] += prompt_tokens
+    totals["completion_tokens"] += completion_tokens
+    totals["total_tokens"] += total_tokens
+    totals["request_count"] += 1
 
     logger.info(
-        "Gemini token totals for thread=%s: prompt=%s completion=%s total=%s",
+        "📊 [CONVERSATION] thread=%s: total_input=%s, total_output=%s, conversation_total=%s, requests=%s",
         thread_id,
         totals["prompt_tokens"],
         totals["completion_tokens"],
         totals["total_tokens"],
+        totals["request_count"],
     )
 
 from langgraph.graph import StateGraph, START, END
@@ -69,6 +92,9 @@ from .tools import (
     ToVivienda,
     ToConvenios,
     ToCartera,
+    ToContabilidad,
+    ToTesoreria,
+    ToCredito,
     ToCertificados,
     CompleteOrEscalate,
     consultar_atencion_asociado,
@@ -76,6 +102,9 @@ from .tools import (
     consultar_vivienda,
     consultar_convenios,
     consultar_cartera,
+    consultar_contabilidad,
+    consultar_tesoreria,
+    consultar_credito,
     solicitar_otp,
     verificar_codigo_otp,
     generar_certificado_tributario,
@@ -102,6 +131,9 @@ class State(TypedDict):
                 "vivienda",
                 "convenios",
                 "cartera",
+                "contabilidad",
+                "tesoreria",
+                "credito",
                 "certificados",
             ]
         ],
@@ -227,31 +259,27 @@ primary_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Actúa como un Orquestador Técnico de alta precisión para COOTRADECUN. "
-            "Tu tarea es derivar al sub-agente correcto basándote en el estado actual.\n\n"
+            "Actúa como el Asistente Virtual principal de COOTRADECUN. "
+            "Puedes responder directamente O derivar a un sub-agente especializado según la necesidad.\n\n"
             
-            "**PRIORIDAD DE EVALUACIÓN:**\n"
-            "1. **Mensajes Recientes (Estado Raw)**: Analiza los últimos 2 mensajes del historial. "
-            "Busca verbos de acción y entidades técnicas (ej. 'buscar', 'consultar', 'certificado', 'crédito'). "
-            "Si hay una intención clara aquí, IGNORA contradicciones del resumen.\n"
-            "2. **Contexto de Resumen**: Úsalo SOLO para entender el 'hilo conductor' o referencias a pronombres "
-            "(ej. si el usuario dice 'hazlo', el resumen te dirá qué es 'lo').\n\n"
+            "**REGLA CRÍTICA - RESPONDER DIRECTAMENTE:**\n"
+            "Para saludos (hola, buenos días, gracias, etc.) o preguntas generales sobre COOTRADECUN, "
+            "RESPONDE TÚ DIRECTAMENTE de forma amable. NO delegues a ningún agente.\n\n"
             
-            "**REGLAS DE ENRUTAMIENTO:**\n"
-            "- Términos de VIVIENDA (proyectos, precios, Pedregal, Rancho Grande, hipoteca) → ToVivienda\n"
-            "- Términos de NÓMINAS (desprendibles, pagos, libranzas, deducciones) → ToNominas\n"
-            "- Términos de ASOCIACIÓN (requisitos, auxilios, beneficios, afiliación) → ToAtencionAsociado\n"
-            "- Términos de CONVENIOS (empresas aliadas, descuentos comerciales) → ToConvenios\n"
-            "- Términos de CARTERA (créditos, préstamos, deuda, saldos) → ToCartera\n"
-            "- Términos de CERTIFICADOS (tributario, aportes, paz y salvo, OTP) → ToCertificados\n"
-            "- Cambio radical de tema o intención ambigua → Hacer pregunta clarificadora\n\n"
+            "**REGLAS DE ENRUTAMIENTO (solo cuando hay intención específica):**\n"
+            "- VIVIENDA (proyectos, precios, Pedregal, Rancho Grande) → ToVivienda\n"
+            "- NÓMINAS (desprendibles, pagos, libranzas) → ToNominas\n"
+            "- ASOCIACIÓN (requisitos, auxilios, beneficios) → ToAtencionAsociado\n"
+            "- CONVENIOS (empresas aliadas, descuentos) → ToConvenios\n"
+            "- CARTERA (deuda, saldos, estado de cuenta) → ToCartera\n"
+            "- CONTABILIDAD (proveedores, facturas, retenciones) → ToContabilidad\n"
+            "- TESORERÍA (medios de pago, PSE, corresponsales) → ToTesoreria\n"
+            "- CRÉDITO (solicitar crédito, tipos de crédito, simular) → ToCredito\n"
+            "- CERTIFICADOS (tributario, aportes, paz y salvo, OTP) → ToCertificados\n\n"
             
-            "**REGLA DE CLARIFICACIÓN:**\n"
-            "Si la pregunta es ambigua o incompleta, HAZ PREGUNTAS DE SEGUIMIENTO antes de delegar.\n\n"
-            
-            "**REGLA DE TEMAS NO RELACIONADOS:**\n"
-            "Si el usuario pregunta sobre temas NO relacionados con COOTRADECUN, "
-            "responde: 'Lo siento, solo puedo ayudarte con temas relacionados con COOTRADECUN.'\n\n"
+            "**IMPORTANTE:**\n"
+            "- Si la pregunta es ambigua, HAZ PREGUNTAS DE SEGUIMIENTO en lugar de asumir.\n"
+            "- Si el tema no es de COOTRADECUN, responde: 'Lo siento, solo puedo ayudarte con temas de COOTRADECUN.'\n\n"
             
             "Current time: {time}."
         ),
@@ -259,7 +287,7 @@ primary_prompt = ChatPromptTemplate.from_messages(
     ]
 ).partial(time=datetime.now)
 
-primary_tools = [ToAtencionAsociado, ToNominas, ToVivienda, ToConvenios, ToCartera, ToCertificados]
+primary_tools = [ToAtencionAsociado, ToNominas, ToVivienda, ToConvenios, ToCartera, ToContabilidad, ToTesoreria, ToCredito, ToCertificados]
 primary_runnable = primary_prompt | llm.bind_tools(primary_tools)
 
 # 2. Atencion Asociado Agent
@@ -417,7 +445,99 @@ cartera_prompt = ChatPromptTemplate.from_messages(
 cartera_tools = [consultar_cartera, CompleteOrEscalate]
 cartera_runnable = cartera_prompt | llm.bind_tools(cartera_tools)
 
-# 7. Certificados Agent (with OTP authentication)
+# 7. Contabilidad Agent
+contabilidad_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres el experto en Contabilidad de COOTRADECUN.\n\n"
+            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
+            "1. SIEMPRE debes usar la herramienta `consultar_contabilidad` ANTES de responder CUALQUIER pregunta.\n"
+            "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
+            "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
+            "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n\n"
+            "Áreas de especialidad:\n"
+            "- Vinculación y actualización de datos de proveedores.\n"
+            "- Radicación de facturas electrónicas y cuentas de cobro.\n"
+            "- Retenciones según normatividad vigente.\n"
+            "- Certificados de retención y plazos de entrega.\n"
+            "- Requisitos documentales para proveedores (RUT, Cámara de Comercio, etc.).\n\n"
+            "**REGLA DE ESCALACIÓN** (OBLIGATORIA):\n"
+            "Si el usuario pregunta sobre temas NO relacionados con contabilidad, usa CompleteOrEscalate:\n"
+            "- CERTIFICADOS (tributario personales, OTP) → ESCALAR\n"
+            "- VIVIENDA, NÓMINAS, ASOCIACIÓN, CONVENIOS, CARTERA, TESORERÍA → ESCALAR\n\n"
+            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            "\nCurrent time: {time}."
+        ),
+        ("placeholder", "{messages}"),
+    ]
+).partial(time=datetime.now)
+
+contabilidad_tools = [consultar_contabilidad, CompleteOrEscalate]
+contabilidad_runnable = contabilidad_prompt | llm.bind_tools(contabilidad_tools)
+
+# 8. Tesoreria Agent
+tesoreria_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres el experto en Tesorería de COOTRADECUN.\n\n"
+            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
+            "1. SIEMPRE debes usar la herramienta `consultar_tesoreria` ANTES de responder CUALQUIER pregunta.\n"
+            "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
+            "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
+            "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n\n"
+            "Áreas de especialidad:\n"
+            "- Medios de pago: PSE, débito automático (RECFON), corresponsales.\n"
+            "- Cuentas bancarias de la cooperativa (Bancolombia, Banco de Bogotá, Agrario, Bancoomeva).\n"
+            "- Oficinas con servicio de caja presencial.\n"
+            "- Tiempos de desembolso (créditos, auxilios, devoluciones, retiros).\n"
+            "- Convenios de recaudo (Efecty, Éxito, Gana Gana, etc.).\n\n"
+            "**REGLA DE ESCALACIÓN** (OBLIGATORIA):\n"
+            "Si el usuario pregunta sobre temas NO relacionados con tesorería, usa CompleteOrEscalate:\n"
+            "- CERTIFICADOS (tributario, OTP) → ESCALAR\n"
+            "- VIVIENDA, NÓMINAS, ASOCIACIÓN, CONVENIOS, CARTERA, CONTABILIDAD → ESCALAR\n\n"
+            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            "\nCurrent time: {time}."
+        ),
+        ("placeholder", "{messages}"),
+    ]
+).partial(time=datetime.now)
+
+tesoreria_tools = [consultar_tesoreria, CompleteOrEscalate]
+tesoreria_runnable = tesoreria_prompt | llm.bind_tools(tesoreria_tools)
+
+# 9. Crédito Agent
+credito_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Eres el experto en Créditos de COOTRADECUN.\n\n"
+            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
+            "1. SIEMPRE debes usar la herramienta `consultar_credito` ANTES de responder CUALQUIER pregunta.\n"
+            "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
+            "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
+            "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n\n"
+            "Áreas de especialidad:\n"
+            "- Tipos de crédito: 1 vez aportes, 2 veces aportes, emergente, educativo, libre inversión, turismo.\n"
+            "- Requisitos generales: asociado activo, al día, verificación en centrales de riesgo.\n"
+            "- Documentación requerida: desprendible, documento de identidad, soportes de ingresos.\n"
+            "- Simulación de crédito.\n\n"
+            "**REGLA DE ESCALACIÓN** (OBLIGATORIA):\n"
+            "Si el usuario pregunta sobre temas NO relacionados con créditos, usa CompleteOrEscalate:\n"
+            "- CERTIFICADOS (tributario, OTP) → ESCALAR\n"
+            "- VIVIENDA, NÓMINAS, ASOCIACIÓN, CONVENIOS, CARTERA, CONTABILIDAD, TESORERÍA → ESCALAR\n\n"
+            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            "\nCurrent time: {time}."
+        ),
+        ("placeholder", "{messages}"),
+    ]
+).partial(time=datetime.now)
+
+credito_tools = [consultar_credito, CompleteOrEscalate]
+credito_runnable = credito_prompt | llm.bind_tools(credito_tools)
+
+# 10. Certificados Agent (with OTP authentication)
 certificados_prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -456,20 +576,50 @@ certificados_runnable = certificados_prompt | llm.bind_tools(certificados_tools)
 # Separate LLM for summarization (without tools) to avoid Gemini ordering issues
 summarization_llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
 
-summarization_node = SummarizationNode(
+_summarization_node_internal = SummarizationNode(
     token_counter=count_tokens_approximately,
     model=summarization_llm,
-    max_tokens=8000,              # Max tokens to keep in context
-    max_tokens_before_summary=6000,  # Trigger summarization when exceeded
+    max_tokens=4000,              # Max tokens to keep in context (was 8000)
+    max_tokens_before_summary=3000,  # Trigger summarization when exceeded (was 6000)
     max_summary_tokens=500,       # Max tokens for the summary itself
 )
+
+def summarization_node_with_logging(state: State):
+    """Wrapper that adds logging to the SummarizationNode for debugging."""
+    messages_before = len(state.get("messages", []))
+    context_before = state.get("context", {})
+    has_summary = bool(context_before.get("summary"))
+    
+    # Estimate tokens before
+    tokens_before = count_tokens_approximately(state.get("messages", []))
+    
+    logger.info(f"🧠 [SUMMARIZATION] BEFORE: messages={messages_before}, tokens≈{tokens_before}, has_prior_summary={has_summary}")
+    
+    # Call the actual summarization node
+    result = _summarization_node_internal.invoke(state)
+    
+    # Log after
+    messages_after = len(result.get("messages", state.get("messages", [])))
+    context_after = result.get("context", context_before)
+    has_summary_after = bool(context_after.get("summary"))
+    tokens_after = count_tokens_approximately(result.get("messages", state.get("messages", [])))
+    
+    logger.info(f"🧠 [SUMMARIZATION] AFTER: messages={messages_after}, tokens≈{tokens_after}, has_summary={has_summary_after}")
+    
+    if messages_before != messages_after:
+        logger.info(f"✂️ [SUMMARIZATION] Trimmed {messages_before - messages_after} messages!")
+    
+    if has_summary_after and not has_summary:
+        logger.info(f"📝 [SUMMARIZATION] New summary created!")
+    
+    return result
 
 # --- Graph Construction ---
 
 builder = StateGraph(State)
 
-# Add summarization node
-builder.add_node("summarize", summarization_node)
+# Add summarization node with logging wrapper
+builder.add_node("summarize", summarization_node_with_logging)
 
 # Primary Assistant Node
 builder.add_node("primary_assistant", Assistant(primary_runnable, name="Primary Assistant"))
@@ -494,6 +644,12 @@ def route_from_start(state: State):
             return "convenios"
         if last == "cartera":
             return "cartera"
+        if last == "contabilidad":
+            return "contabilidad"
+        if last == "tesoreria":
+            return "tesoreria"
+        if last == "credito":
+            return "credito"
     return "primary_assistant"
 
 # START -> summarize first, then route to appropriate agent
@@ -501,7 +657,7 @@ builder.add_edge(START, "summarize")
 builder.add_conditional_edges(
     "summarize",
     route_from_start,
-    ["primary_assistant", "atencion_asociado", "nominas", "vivienda", "convenios", "cartera", "certificados"],
+    ["primary_assistant", "atencion_asociado", "nominas", "vivienda", "convenios", "cartera", "contabilidad", "tesoreria", "credito", "certificados"],
 )
 
 # --- Specialized Workflows ---
@@ -547,6 +703,9 @@ create_workflow("nominas", nominas_runnable, nominas_tools, "nominas")
 create_workflow("vivienda", vivienda_runnable, vivienda_tools, "vivienda")
 create_workflow("convenios", convenios_runnable, convenios_tools, "convenios")
 create_workflow("cartera", cartera_runnable, cartera_tools, "cartera")
+create_workflow("contabilidad", contabilidad_runnable, contabilidad_tools, "contabilidad")
+create_workflow("tesoreria", tesoreria_runnable, tesoreria_tools, "tesoreria")
+create_workflow("credito", credito_runnable, credito_tools, "credito")
 create_workflow("certificados", certificados_runnable, certificados_tools, "certificados")
 
 # Primary Routing Logic
@@ -563,6 +722,12 @@ def route_primary(state: State):
             return "enter_convenios"
         elif tool_calls[0]["name"] == ToCartera.__name__:
             return "enter_cartera"
+        elif tool_calls[0]["name"] == ToContabilidad.__name__:
+            return "enter_contabilidad"
+        elif tool_calls[0]["name"] == ToTesoreria.__name__:
+            return "enter_tesoreria"
+        elif tool_calls[0]["name"] == ToCredito.__name__:
+            return "enter_credito"
         elif tool_calls[0]["name"] == ToCertificados.__name__:
             return "enter_certificados"
     return END
@@ -570,7 +735,7 @@ def route_primary(state: State):
 builder.add_conditional_edges(
     "primary_assistant",
     route_primary,
-    ["enter_atencion_asociado", "enter_nominas", "enter_vivienda", "enter_convenios", "enter_cartera", "enter_certificados", END]
+    ["enter_atencion_asociado", "enter_nominas", "enter_vivienda", "enter_convenios", "enter_cartera", "enter_contabilidad", "enter_tesoreria", "enter_credito", "enter_certificados", END]
 )
 
 graph = builder.compile()

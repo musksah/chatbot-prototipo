@@ -150,7 +150,8 @@ async def chat_endpoint(request: ChatRequest):
     config = {"configurable": {"thread_id": thread_id}}
     
     inputs = {
-        "messages": [HumanMessage(content=request.message)]
+        "messages": [HumanMessage(content=request.message)],
+        "context": {},  # Required for SummarizationNode to work
     }
     
     # Log incoming request

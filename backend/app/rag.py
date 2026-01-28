@@ -76,6 +76,9 @@ def load_and_index_docs(docs_dir: str):
     vivienda_docs = []
     convenios_docs = []
     cartera_docs = []
+    contabilidad_docs = []
+    tesoreria_docs = []
+    credito_docs = []
     
     # Load specific files
     if os.path.exists(os.path.join(docs_dir, "atencion al asociado.pdf")):
@@ -102,6 +105,21 @@ def load_and_index_docs(docs_dir: str):
         loader = PyPDFLoader(os.path.join(docs_dir, "cartera.pdf"))
         cartera_docs.extend(loader.load())
         logger.info("RAG: Loaded cartera.pdf (pages=%s)", len(cartera_docs))
+    
+    if os.path.exists(os.path.join(docs_dir, "contabilidad.pdf")):
+        loader = PyPDFLoader(os.path.join(docs_dir, "contabilidad.pdf"))
+        contabilidad_docs.extend(loader.load())
+        logger.info("RAG: Loaded contabilidad.pdf (pages=%s)", len(contabilidad_docs))
+    
+    if os.path.exists(os.path.join(docs_dir, "tesoreria.pdf")):
+        loader = PyPDFLoader(os.path.join(docs_dir, "tesoreria.pdf"))
+        tesoreria_docs.extend(loader.load())
+        logger.info("RAG: Loaded tesoreria.pdf (pages=%s)", len(tesoreria_docs))
+    
+    if os.path.exists(os.path.join(docs_dir, "credito.pdf")):
+        loader = PyPDFLoader(os.path.join(docs_dir, "credito.pdf"))
+        credito_docs.extend(loader.load())
+        logger.info("RAG: Loaded credito.pdf (pages=%s)", len(credito_docs))
     
     # Standard text splitter for associado and nominas
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -140,6 +158,24 @@ def load_and_index_docs(docs_dir: str):
         vectorstore = FAISS.from_documents(splits, embeddings)
         retrievers["cartera"] = vectorstore.as_retriever()
         logger.info("RAG: Indexed cartera (%s chunks)", len(splits))
+    
+    if contabilidad_docs:
+        splits = text_splitter.split_documents(contabilidad_docs)
+        vectorstore = FAISS.from_documents(splits, embeddings)
+        retrievers["contabilidad"] = vectorstore.as_retriever()
+        logger.info("RAG: Indexed contabilidad (%s chunks)", len(splits))
+    
+    if tesoreria_docs:
+        splits = text_splitter.split_documents(tesoreria_docs)
+        vectorstore = FAISS.from_documents(splits, embeddings)
+        retrievers["tesoreria"] = vectorstore.as_retriever()
+        logger.info("RAG: Indexed tesoreria (%s chunks)", len(splits))
+    
+    if credito_docs:
+        splits = text_splitter.split_documents(credito_docs)
+        vectorstore = FAISS.from_documents(splits, embeddings)
+        retrievers["credito"] = vectorstore.as_retriever()
+        logger.info("RAG: Indexed credito (%s chunks)", len(splits))
         
     if not retrievers:
         logger.warning("RAG: No documents indexed. Check PDF files and OCR/text extraction.")

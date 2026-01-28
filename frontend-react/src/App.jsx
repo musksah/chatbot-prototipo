@@ -63,14 +63,12 @@ function App() {
   const [messages, setMessages] = useState([
     {
       type: 'bot',
-      content: `¡Hola! 👋 Soy el asistente virtual de <strong>COOTRADECUN</strong>. Estoy aquí para ayudarte con:<br><br>
-📋 <strong>Asociación:</strong> Requisitos, auxilios y beneficios<br>
-💰 <strong>Nóminas:</strong> Desprendibles, pagos y libranzas<br>
-🏠 <strong>Vivienda:</strong> Proyectos y créditos de vivienda<br>
-🤝 <strong>Convenios:</strong> Empresas aliadas y descuentos<br>
-💳 <strong>Cartera:</strong> Créditos, préstamos y saldos<br>
-📄 <strong>Certificados:</strong> Tributarios, aportes y paz y salvo<br><br>
-¿En qué puedo asistirte hoy?`
+      content: `¡Hola! 👋 Soy el asistente de <strong>COOTRADECUN</strong>.<br>
+Puedo responder tus preguntas y ayudarte con trámites.<br><br>
+📝 <strong>Asociación</strong> • 💰 <strong>Nóminas</strong> • 🏠 <strong>Vivienda</strong><br>
+🤝 <strong>Convenios</strong> • 💳 <strong>Cartera</strong> • 📄 <strong>Certificados</strong><br>
+📊 <strong>Contabilidad</strong> • 🏦 <strong>Tesorería</strong> • 💵 <strong>Crédito</strong><br><br>
+¿En qué puedo ayudarte?`
     }
   ])
   const [inputValue, setInputValue] = useState('')
@@ -159,14 +157,12 @@ function App() {
     setUser(null)
     setMessages([{
       type: 'bot',
-      content: `¡Hola! 👋 Soy el asistente virtual de <strong>COOTRADECUN</strong>. Estoy aquí para ayudarte con:<br><br>
-📋 <strong>Asociación:</strong> Requisitos, auxilios y beneficios<br>
-💰 <strong>Nóminas:</strong> Desprendibles, pagos y libranzas<br>
-🏠 <strong>Vivienda:</strong> Proyectos y créditos de vivienda<br>
-🤝 <strong>Convenios:</strong> Empresas aliadas y descuentos<br>
-💳 <strong>Cartera:</strong> Créditos, préstamos y saldos<br>
-📄 <strong>Certificados:</strong> Tributarios, aportes y paz y salvo<br><br>
-¿En qué puedo asistirte hoy?`
+      content: `¡Hola! 👋 Soy el asistente de <strong>COOTRADECUN</strong>.<br>
+Puedo responder tus preguntas y ayudarte con trámites.<br><br>
+📝 <strong>Asociación</strong> • 💰 <strong>Nóminas</strong> • 🏠 <strong>Vivienda</strong><br>
+🤝 <strong>Convenios</strong> • 💳 <strong>Cartera</strong> • 📄 <strong>Certificados</strong><br>
+📊 <strong>Contabilidad</strong> • 🏦 <strong>Tesorería</strong> • 💵 <strong>Crédito</strong><br><br>
+¿En qué puedo ayudarte?`
     }])
   }
 

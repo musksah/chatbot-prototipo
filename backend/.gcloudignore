@@ -1,0 +1,30 @@
+# Ignore virtual environments
+venv/
+.venv/
+ENV/
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Ignore local config
+.env
+.env.local
+
+# Ignore IDE files
+.idea/
+.vscode/
+*.swp
+
+# Ignore git
+.git/
+.gitignore
+
+# Ignore Docker files (not needed for Cloud Build)
+docker-compose*.yml
+
+# Ignore generated files
+generated_pdfs/
+*.log

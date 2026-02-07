@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatbot-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount source code for hot-reload during development
+      - ./backend/app:/app/app:ro
+      - ./backend/docs:/app/docs:ro
+      # Persist generated PDFs
+      - ./backend/generated_pdfs:/app/generated_pdfs
+    environment:
+      # Application settings
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - HOST=0.0.0.0
+      - PORT=8000
+      # API Keys (loaded from .env file)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      # Twilio configuration
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
+      - TWILIO_VERIFY_SERVICE_SID=${TWILIO_VERIFY_SERVICE_SID:-}
+      # GCP configuration
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}
+      # PostgreSQL (external database - not in Docker)
+      - DATABASE_URL=${DATABASE_URL:-}
+      - POSTGRES_HOST=${POSTGRES_HOST:-}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-}
+      - POSTGRES_USER=${POSTGRES_USER:-}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - chatbot-network
+
+networks:
+  chatbot-network:
+    driver: bridge

@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 logger = logging.getLogger(__name__)
 
 # Initialize embeddings
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
 
 def split_vivienda_by_project(docs):
     """

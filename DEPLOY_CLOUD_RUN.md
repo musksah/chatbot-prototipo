@@ -15,7 +15,7 @@ Esta guía explica cómo desplegar el chatbot (backend y frontend) en Google Clo
 gcloud auth login
 
 # Configurar proyecto
-gcloud config set project TU_PROJECT_ID
+gcloud config set project corvus-data-testing
 
 # Habilitar APIs necesarias
 gcloud services enable run.googleapis.com
@@ -42,18 +42,18 @@ gcloud artifacts repositories create chatbot-repo \
 cd backend
 
 # Construir con Cloud Build
-gcloud builds submit --tag us-central1-docker.pkg.dev/TU_PROJECT_ID/chatbot-repo/chatbot-backend
+gcloud builds submit --tag us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-backend
 
 # O construir localmente y subir
-docker build -t us-central1-docker.pkg.dev/TU_PROJECT_ID/chatbot-repo/chatbot-backend .
-docker push us-central1-docker.pkg.dev/TU_PROJECT_ID/chatbot-repo/chatbot-backend
+docker build -t us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-backend .
+docker push us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-backend
 ```
 
 ### 1.3 Desplegar en Cloud Run
 
 ```bash
 gcloud run deploy chatbot-backend \
-    --image us-central1-docker.pkg.dev/TU_PROJECT_ID/chatbot-repo/chatbot-backend \
+    --image us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-backend \
     --platform managed \
     --region us-central1 \
     --allow-unauthenticated \
@@ -80,18 +80,18 @@ VITE_API_URL=https://chatbot-backend-xxxxx.run.app
 cd frontend-react
 
 # Construir con Cloud Build
-gcloud builds submit --tag us-central1-docker.pkg.dev/TU_PROJECT_ID/chatbot-repo/chatbot-frontend
+gcloud builds submit --tag us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-frontend
 
 # O construir localmente
-docker build -t us-central1-docker.pkg.dev/TU_PROJECT_ID/chatbot-repo/chatbot-frontend .
-docker push us-central1-docker.pkg.dev/TU_PROJECT_ID/chatbot-repo/chatbot-frontend
+docker build -t us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-frontend .
+docker push us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-frontend
 ```
 
 ### 2.3 Desplegar en Cloud Run
 
 ```bash
 gcloud run deploy chatbot-frontend \
-    --image us-central1-docker.pkg.dev/TU_PROJECT_ID/chatbot-repo/chatbot-frontend \
+    --image us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-frontend \
     --platform managed \
     --region us-central1 \
     --allow-unauthenticated

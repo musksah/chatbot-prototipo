@@ -1,0 +1,392 @@
+/* ─── Conversations Page ──────────────────────────── */
+
+.conv-container {
+  width: 100%;
+  max-width: 600px;
+  background: white;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ─── Header ─────────────────────────────────────── */
+
+.conv-header {
+  background: linear-gradient(135deg, #0056b3 0%, #004494 100%);
+  color: white;
+  padding: 12px 15px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+}
+
+.conv-back-btn {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+
+.conv-back-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.conv-header-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.conv-header-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.conv-header-avatar-icon {
+  font-size: 1.2rem;
+}
+
+.conv-header-name {
+  font-weight: 600;
+  font-size: 1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-header-phone {
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.conv-header-badge {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+/* ─── Search ─────────────────────────────────────── */
+
+.conv-search {
+  display: flex;
+  gap: 8px;
+  padding: 10px 15px;
+  background: #f6f7f9;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.conv-search input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1.5px solid #ddd;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.conv-search input:focus {
+  border-color: #0056b3;
+}
+
+.conv-search button {
+  background: linear-gradient(135deg, #0056b3 0%, #004494 100%);
+  color: white;
+  border: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s;
+}
+
+.conv-search button:hover {
+  transform: scale(1.05);
+}
+
+/* ─── Session List ───────────────────────────────── */
+
+.conv-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.conv-session-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 15px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.conv-session-card:hover {
+  background: #f0f6ff;
+}
+
+.conv-session-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #25d366, #128c7e);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 700;
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.conv-session-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.conv-session-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.conv-session-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #1a1a1a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-session-time {
+  font-size: 0.75rem;
+  color: #999;
+  white-space: nowrap;
+  margin-left: 8px;
+}
+
+.conv-session-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.conv-session-preview {
+  font-size: 0.85rem;
+  color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.conv-session-count {
+  background: #25d366;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  min-width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+/* ─── Messages ───────────────────────────────────── */
+
+.conv-messages {
+  flex: 1;
+  padding: 15px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #efeae2;
+  background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23d4cfc6' fill-opacity='0.3'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+.conv-msg {
+  display: flex;
+  animation: msgFadeIn 0.25s ease-out;
+}
+
+@keyframes msgFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.conv-msg-user {
+  justify-content: flex-end;
+}
+
+.conv-msg-bot {
+  justify-content: flex-start;
+}
+
+.conv-msg-bubble {
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  position: relative;
+  word-wrap: break-word;
+  line-height: 1.4;
+  font-size: 0.9rem;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
+}
+
+.conv-msg-user .conv-msg-bubble {
+  background: #dcf8c6;
+  color: #1a1a1a;
+  border-top-right-radius: 2px;
+}
+
+.conv-msg-bot .conv-msg-bubble {
+  background: white;
+  color: #1a1a1a;
+  border-top-left-radius: 2px;
+}
+
+.conv-msg-bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.conv-msg-time {
+  display: block;
+  font-size: 0.65rem;
+  color: #999;
+  text-align: right;
+  margin-top: 4px;
+}
+
+/* ─── Pagination ─────────────────────────────────── */
+
+.conv-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 10px;
+  border-top: 1px solid #e8e8e8;
+  background: #fafafa;
+}
+
+.conv-pagination button {
+  background: #0056b3;
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: opacity 0.2s;
+}
+
+.conv-pagination button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.conv-pagination span {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+/* ─── Loading / Empty ────────────────────────────── */
+
+.conv-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px;
+  color: #888;
+  font-size: 0.9rem;
+}
+
+.conv-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #e0e0e0;
+  border-top-color: #0056b3;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.conv-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 60px 20px;
+  color: #aaa;
+}
+
+.conv-empty-icon {
+  font-size: 2.5rem;
+}
+
+.conv-empty p {
+  font-size: 0.95rem;
+}
+
+/* ─── Scrollbar ──────────────────────────────────── */
+
+.conv-list::-webkit-scrollbar,
+.conv-messages::-webkit-scrollbar {
+  width: 5px;
+}
+
+.conv-list::-webkit-scrollbar-track,
+.conv-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conv-list::-webkit-scrollbar-thumb,
+.conv-messages::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}

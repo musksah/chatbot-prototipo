@@ -22,3 +22,10 @@ psycopg[binary]
 
 # Conversation memory management
 langmem
+
+# WhatsApp Cloud API integration
+httpx
+
+# Async database (Conversations model)
+sqlalchemy[asyncio]
+asyncpg

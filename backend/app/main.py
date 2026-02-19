@@ -3,14 +3,19 @@ from dotenv import load_dotenv
 load_dotenv() # Load env vars from .env file
 
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage
 
 from .agent import graph
 
 app = FastAPI(title="Cootradecun Chatbot API")
+
+# Register conversations API router
+from .api.conversations import router as conversations_router
+app.include_router(conversations_router, prefix="/api")
 
 # Add CORS middleware
 app.add_middleware(
@@ -29,6 +34,19 @@ async def health_check():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Create database tables on startup."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from .database import create_tables
+        await create_tables()
+        logger.info("✅ Database tables initialized")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not create DB tables (non-fatal): {e}")
 
 @app.get("/debug-gcs")
 async def debug_gcs():
@@ -208,6 +226,68 @@ async def chat_endpoint(request: ChatRequest):
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/health")
-def health_check():
+
+# --- WhatsApp Webhook Endpoints ---
+
+from .whatsapp import (
+    verify_webhook,
+    parse_incoming_message,
+    process_whatsapp_message,
+    is_whatsapp_configured,
+)
+
+@app.get("/webhook/whatsapp")
+async def whatsapp_webhook_verify(request: Request):
+    """
+    Webhook verification endpoint (required by Meta).
+    Meta sends a GET with hub.mode, hub.verify_token, and hub.challenge.
+    """
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+
+    success, result = verify_webhook(mode, token, challenge)
+
+    if success:
+        return PlainTextResponse(content=result, status_code=200)
+    else:
+        raise HTTPException(status_code=403, detail=result)
+
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_webhook_receive(request: Request, background_tasks: BackgroundTasks):
+    """
+    Receive incoming WhatsApp messages from Meta.
+    Returns 200 immediately and processes the message in the background
+    so Meta doesn't time out waiting for the LLM response.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Meta sometimes sends status updates (delivered, read) — ignore them
+    parsed = parse_incoming_message(payload)
+
+    if parsed:
+        # Process in background so we return 200 to Meta quickly
+        background_tasks.add_task(
+            process_whatsapp_message,
+            sender_phone=parsed["sender"],
+            text=parsed["text"],
+            message_id=parsed["message_id"],
+            graph_with_memory=graph_with_memory,
+            sender_name=parsed["name"],
+        )
+
+    # Always return 200 to Meta (even if no message to process)
     return {"status": "ok"}
+
+
+@app.get("/whatsapp/status")
+async def whatsapp_status():
+    """Check if WhatsApp integration is configured."""
+    return {
+        "configured": is_whatsapp_configured(),
+        "phone_number_id": os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")[-4:] if os.getenv("WHATSAPP_PHONE_NUMBER_ID") else None,
+    }

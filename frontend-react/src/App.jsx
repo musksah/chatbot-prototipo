@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import './App.css'
 import Login from './Login'
+import ConversationsPage from './ConversationsPage'
 
 // API URL from environment variable or default to localhost
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -73,6 +74,7 @@ Puedo responder tus preguntas y ayudarte con trámites.<br><br>
   ])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [currentView, setCurrentView] = useState('chat') // 'chat' or 'conversations'
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -171,11 +173,19 @@ Puedo responder tus preguntas y ayudarte con trámites.<br><br>
     return <Login onLogin={setUser} />
   }
 
+  // Show conversations page
+  if (currentView === 'conversations') {
+    return <ConversationsPage onBack={() => setCurrentView('chat')} />
+  }
+
   return (
     <div className="chat-container">
       <header className="header">
         <img src="/logo-cootradecun.webp" alt="Logo Cootradecun" />
         <span>Asistente Cootradecun</span>
+        <button className="logout-btn" onClick={() => setCurrentView('conversations')} title="Ver conversaciones WhatsApp">
+          💬
+        </button>
         <button className="logout-btn" onClick={handleLogout} title="Cerrar sesión">
           Salir
         </button>

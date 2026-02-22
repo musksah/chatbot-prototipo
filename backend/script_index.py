@@ -25,6 +25,12 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_core.documents import Document
+from app.preprocessing_service import (
+    preprocess_pages,
+    quality_gate,
+    deduplicate_chunks,
+    enrich_chunks_with_context,
+)
 
 load_dotenv()
 
@@ -212,9 +218,20 @@ def process_and_index(reset: bool = False):
                 parent_chunks, child_chunks = split_vivienda_by_project(docs)
             else:
                 pages = [{"content": d.page_content, "page_number": d.metadata.get("page", 0)} for d in docs]
+                # Preprocess pages (clean, normalize, remove headers)
+                pages = preprocess_pages(pages)
                 parent_chunks, child_chunks = create_parent_child_chunks(pages)
 
+            # Post-chunking preprocessing
+            child_chunks = quality_gate(child_chunks)
+            child_chunks = deduplicate_chunks(child_chunks)
+
             all_chunks = parent_chunks + child_chunks
+            
+            # LLM Contextual Enrichment
+            child_chunks = enrich_chunks_with_context(child_chunks, title)
+            all_chunks = parent_chunks + child_chunks
+            
             logger.info(
                 f"  Created {len(parent_chunks)} parent + {len(child_chunks)} child "
                 f"= {len(all_chunks)} total chunks"

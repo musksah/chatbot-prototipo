@@ -64,45 +64,139 @@ class CompleteOrEscalate(BaseModel):
 
 # --- Retrieval Tools ---
 
+# Query expansion: Gemini generates alternative phrasings for broader retrieval
+from langchain_google_genai import ChatGoogleGenerativeAI
+from .rag import search_by_department, _hybrid_search, _rerank_chunks, _format_output, DEFAULT_K, RERANK_CANDIDATES, ENABLE_RERANK
+
+ENABLE_QUERY_EXPANSION = True
+
+
+def _expand_query(query: str) -> list[str]:
+    """
+    Use Gemini to generate 2 alternative phrasings of the user's query.
+    This helps retrieve chunks that may use different terminology.
+    
+    Returns: list of 2-3 queries (original + alternatives)
+    """
+    if not ENABLE_QUERY_EXPANSION:
+        return [query]
+    
+    try:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+        prompt = (
+            f"Eres un asistente de búsqueda para COOTRADECUN (una cooperativa colombiana). "
+            f"Genera exactamente 2 reformulaciones alternativas de la siguiente pregunta "
+            f"para mejorar la búsqueda semántica. Las alternativas deben usar sinónimos "
+            f"o frases diferentes pero mantener el mismo significado.\n\n"
+            f"Pregunta original: {query}\n\n"
+            f"Responde SOLO con las 2 alternativas, una por línea, sin numeración ni viñetas."
+        )
+        
+        result = llm.invoke(prompt)
+        alternatives = [
+            line.strip() for line in result.content.strip().split("\n") 
+            if line.strip()
+        ][:2]  # Max 2 alternatives
+        
+        all_queries = [query] + alternatives
+        logger.info(
+            f"🔍 [EXPAND] Original: '{query[:50]}...' → "
+            f"+{len(alternatives)} alternatives"
+        )
+        return all_queries
+    
+    except Exception as e:
+        logger.warning(f"🔍 [EXPAND] Error expanding query: {e}. Using original only.")
+        return [query]
+
+
+def _invoke_retriever_with_expansion(department: str, query: str, k: int = DEFAULT_K) -> str:
+    """
+    Full RAG pipeline with query expansion:
+    1. Expand query into 2-3 variants
+    2. Run hybrid search for each variant
+    3. Deduplicate candidates
+    4. Re-rank all candidates
+    5. Return top-k formatted results
+    """
+    # Step 1: Expand query
+    queries = _expand_query(query)
+    
+    # Step 2: Hybrid search for each query
+    all_candidates = []
+    seen_ids = set()
+    
+    for q in queries:
+        chunks = _hybrid_search(q, department, k=RERANK_CANDIDATES)
+        for chunk in chunks:
+            if chunk["id"] not in seen_ids:
+                seen_ids.add(chunk["id"])
+                all_candidates.append(chunk)
+    
+    if not all_candidates:
+        return "No se encontró información relevante."
+    
+    # Step 3: Re-rank the combined pool using original query
+    if ENABLE_RERANK and len(all_candidates) > k:
+        final_chunks = _rerank_chunks(query, all_candidates, top_k=k)
+    else:
+        # Sort by RRF score as fallback
+        all_candidates.sort(key=lambda c: c["rrf_score"], reverse=True)
+        final_chunks = all_candidates[:k]
+    
+    # Step 4: Format output
+    from .rag import DEPT_TO_TITLE
+    result = _format_output(final_chunks, department)
+    
+    total_chars = sum(len(c["content"]) for c in final_chunks)
+    logger.info(
+        f"📚 [RAG+EXPAND] {department}: queries={len(queries)}, "
+        f"total_candidates={len(all_candidates)}, final={len(final_chunks)}, "
+        f"chars={total_chars}"
+    )
+    
+    return result
+
+
 @tool
 def consultar_atencion_asociado(query: str):
     """Useful to answer questions about association requirements, benefits, auxiliaries, and agreements."""
-    return _invoke_retriever_with_logging("atencion_asociado", query)
+    return _invoke_retriever_with_expansion("atencion_asociado", query)
 
 @tool
 def consultar_nominas(query: str):
     """Useful to answer questions about payment slips, payment channels, and payroll deductions."""
-    return _invoke_retriever_with_logging("nominas", query)
+    return _invoke_retriever_with_expansion("nominas", query)
 
 @tool
 def consultar_vivienda(query: str):
     """Useful to answer questions about housing projects, credits, and simulations."""
-    return _invoke_retriever_with_logging("vivienda", query)
+    return _invoke_retriever_with_expansion("vivienda", query)
 
 @tool
 def consultar_convenios(query: str):
     """Useful to answer questions about partner companies, commercial agreements, discounts, and benefits for associates."""
-    return _invoke_retriever_with_logging("convenios", query)
+    return _invoke_retriever_with_expansion("convenios", query)
 
 @tool
 def consultar_cartera(query: str):
     """Useful to answer questions about loans, credits, debt status, payment plans, and portfolio management."""
-    return _invoke_retriever_with_logging("cartera", query)
+    return _invoke_retriever_with_expansion("cartera", query)
 
 @tool
 def consultar_contabilidad(query: str):
     """Useful to answer questions about supplier registration, invoicing, withholdings, and accounting certificates."""
-    return _invoke_retriever_with_logging("contabilidad", query)
+    return _invoke_retriever_with_expansion("contabilidad", query)
 
 @tool
 def consultar_tesoreria(query: str):
     """Useful to answer questions about payment methods, bank accounts, disbursement times, and correspondents."""
-    return _invoke_retriever_with_logging("tesoreria", query)
+    return _invoke_retriever_with_expansion("tesoreria", query)
 
 @tool
 def consultar_credito(query: str):
     """Useful to answer questions about credit types, loan requirements, credit simulation, and credit applications."""
-    return _invoke_retriever_with_logging("credito", query)
+    return _invoke_retriever_with_expansion("credito", query)
 
 
 # --- Transfer Tool for Certificates ---

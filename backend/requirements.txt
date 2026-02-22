@@ -18,6 +18,7 @@ google-cloud-storage
 # PostgreSQL Checkpointer for LangGraph (persistent conversation state)
 langgraph-checkpoint-postgres
 psycopg[binary]
+psycopg-pool
 
 # Conversation memory management
 langmem

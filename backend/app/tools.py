@@ -1,27 +1,10 @@
 from typing import Annotated, Literal
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-from .rag import get_retrievers
+from .rag import _invoke_retriever_with_logging
 import logging
 
 logger = logging.getLogger(__name__)
-
-def _invoke_retriever_with_logging(retriever_name: str, query: str) -> str:
-    """Helper that invokes a retriever and logs chunk statistics."""
-    retrievers = get_retrievers()
-    if retriever_name not in retrievers:
-        return "No information available."
-    
-    docs = retrievers[retriever_name].invoke(query)
-    
-    # Log chunk statistics
-    chunks_count = len(docs)
-    total_chars = sum(len(d.page_content) for d in docs)
-    avg_chars = total_chars // chunks_count if chunks_count > 0 else 0
-    
-    logger.info(f"📚 [RAG] {retriever_name}: query='{query[:50]}...', chunks={chunks_count}, total_chars={total_chars}, avg_chars={avg_chars}")
-    
-    return "\n\n".join([d.page_content for d in docs])
 
 # --- Transfer Tools ---
 

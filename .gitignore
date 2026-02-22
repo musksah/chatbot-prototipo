@@ -45,3 +45,5 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Google Cloud SDK (local install)
+google-cloud-sdk/

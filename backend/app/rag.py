@@ -1,194 +1,106 @@
+"""
+RAG Module — Retrieval from pgvector (PostgreSQL).
+
+Queries the existing rag_document + rag_chunk tables in corvus_dashboard.
+Uses cosine similarity search with optional department filtering.
+"""
+
 import os
-import re
 import logging
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
+import psycopg
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
-# Initialize embeddings
+# Initialize embeddings model (same as indexer)
 embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
 
-def split_vivienda_by_project(docs):
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Connection pool (lazy)
+_pool = None
+
+
+def _get_connection():
+    """Get a database connection. Uses a simple connection for now."""
+    if not DATABASE_URL:
+        logger.error("RAG: DATABASE_URL not configured.")
+        return None
+    try:
+        return psycopg.connect(DATABASE_URL)
+    except Exception as e:
+        logger.error(f"RAG: Failed to connect to database: {e}")
+        return None
+
+
+def search_by_department(query: str, department: str, k: int = 4) -> str:
     """
-    Custom splitter for vivienda.pdf that keeps each project's information together.
-    Projects are identified by their numbered headers in the PDF.
+    Searches rag_chunk table using cosine similarity, filtered by department.
+    
+    The department filter works by joining rag_chunk → rag_document → matching title.
     """
-    logger.info("RAG: Splitting vivienda docs into project chunks (pages=%s)", len(docs))
-    full_text = "\n".join([doc.page_content for doc in docs])
-    
-    # Clean up the text - remove excessive whitespace
-    full_text = re.sub(r'\s+', ' ', full_text)
-    
-    # Split by project markers (1. EL PEDREGAL, 2. RANCHO GRANDE, 3. ARRAYANES)
-    # Using regex to find project boundaries
-    project_patterns = [
-        (r'1\.\s*EL\s*PEDREGAL.*?(?=2\.\s*RANCHO\s*GRANDE|$)', 'EL PEDREGAL - FUSAGASUGÁ'),
-        (r'2\.\s*RANCHO\s*GRANDE.*?(?=3\.\s*ARRAYANES|$)', 'RANCHO GRANDE - MELGAR'),
-        (r'3\.\s*ARRAYANES.*', 'ARRAYANES DE PEÑALISA II - RICAURTE'),
-    ]
-    
-    project_docs = []
-    
-    for pattern, project_name in project_patterns:
-        match = re.search(pattern, full_text, re.IGNORECASE | re.DOTALL)
-        if match:
-            content = match.group(0).strip()
-            # Add project name as prefix for clarity
-            content = f"[PROYECTO: {project_name}]\n\n{content}"
-            
-            # Create document with metadata
-            doc = Document(
-                page_content=content,
-                metadata={
-                    "source": "vivienda.pdf",
-                    "project": project_name,
-                    "type": "vivienda"
-                }
-            )
-            project_docs.append(doc)
-            logger.info("RAG: Extracted project '%s' (%s chars)", project_name, len(content))
-    
-    # If pattern matching failed, fall back to larger chunks
-    if not project_docs:
-        logger.warning("RAG: Project split failed, falling back to large chunks")
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=3000, 
-            chunk_overlap=500,
-            separators=["\n\n", "\n", ". ", " "]
+    conn = _get_connection()
+    if not conn:
+        return "No information available. Database connection failed."
+
+    try:
+        # Generate embedding for the query
+        query_vector = embeddings.embed_query(query)
+        query_vector_str = str(query_vector)
+
+        # Map department names to document titles
+        dept_to_title = {
+            "atencion_asociado": "Atención al Asociado",
+            "nominas": "Nóminas",
+            "vivienda": "Vivienda",
+            "convenios": "Convenios",
+            "cartera": "Cartera",
+            "contabilidad": "Contabilidad",
+            "tesoreria": "Tesorería",
+            "credito": "Crédito",
+        }
+        title = dept_to_title.get(department, department)
+
+        # Cosine similarity search filtered by document title
+        results = conn.execute(
+            """
+            SELECT c.content, c.chunk_index, c.page_number,
+                   1 - (c.embedding <=> %s::vector) AS similarity
+            FROM rag_chunk c
+            JOIN rag_document d ON c.document_id = d.id
+            WHERE d.title = %s AND d.status = 'indexed'
+            ORDER BY c.embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (query_vector_str, title, query_vector_str, k)
+        ).fetchall()
+
+        if not results:
+            logger.info(f"📚 [RAG] {department}: query='{query[:50]}...', chunks=0 (no results)")
+            return "No se encontró información relevante."
+
+        # Log statistics
+        chunks_count = len(results)
+        total_chars = sum(len(r[0]) for r in results)
+        avg_similarity = sum(r[3] for r in results) / chunks_count
+        logger.info(
+            f"📚 [RAG] {department}: query='{query[:50]}...', "
+            f"chunks={chunks_count}, total_chars={total_chars}, "
+            f"avg_similarity={avg_similarity:.3f}"
         )
-        project_docs = text_splitter.split_documents(docs)
-    
-    return project_docs
 
-def load_and_index_docs(docs_dir: str):
+        return "\n\n".join([r[0] for r in results])
+
+    except Exception as e:
+        logger.error(f"RAG: Error querying {department}: {e}")
+        return f"Error retrieving information: {e}"
+    finally:
+        conn.close()
+
+
+def _invoke_retriever_with_logging(retriever_name: str, query: str, k: int = 4) -> str:
     """
-    Loads PDFs from the directory, splits them, and creates a FAISS index.
-    Uses specialized chunking for vivienda to keep project info together.
+    Public API used by tools.py.
+    Wraps search_by_department for backward compatibility.
     """
-    logger.info("RAG: Loading docs from %s", docs_dir)
-    
-    associado_docs = []
-    nominas_docs = []
-    vivienda_docs = []
-    convenios_docs = []
-    cartera_docs = []
-    contabilidad_docs = []
-    tesoreria_docs = []
-    credito_docs = []
-    
-    # Load specific files
-    if os.path.exists(os.path.join(docs_dir, "atencion al asociado.pdf")):
-        loader = PyPDFLoader(os.path.join(docs_dir, "atencion al asociado.pdf"))
-        associado_docs.extend(loader.load())
-        logger.info("RAG: Loaded atencion al asociado.pdf (pages=%s)", len(associado_docs))
-
-    if os.path.exists(os.path.join(docs_dir, "nominas.pdf")):
-        loader = PyPDFLoader(os.path.join(docs_dir, "nominas.pdf"))
-        nominas_docs.extend(loader.load())
-        logger.info("RAG: Loaded nominas.pdf (pages=%s)", len(nominas_docs))
-        
-    if os.path.exists(os.path.join(docs_dir, "vivienda.pdf")):
-        loader = PyPDFLoader(os.path.join(docs_dir, "vivienda.pdf"))
-        vivienda_docs.extend(loader.load())
-        logger.info("RAG: Loaded vivienda.pdf (pages=%s)", len(vivienda_docs))
-    
-    if os.path.exists(os.path.join(docs_dir, "convenios.pdf")):
-        loader = PyPDFLoader(os.path.join(docs_dir, "convenios.pdf"))
-        convenios_docs.extend(loader.load())
-        logger.info("RAG: Loaded convenios.pdf (pages=%s)", len(convenios_docs))
-    
-    if os.path.exists(os.path.join(docs_dir, "cartera.pdf")):
-        loader = PyPDFLoader(os.path.join(docs_dir, "cartera.pdf"))
-        cartera_docs.extend(loader.load())
-        logger.info("RAG: Loaded cartera.pdf (pages=%s)", len(cartera_docs))
-    
-    if os.path.exists(os.path.join(docs_dir, "contabilidad.pdf")):
-        loader = PyPDFLoader(os.path.join(docs_dir, "contabilidad.pdf"))
-        contabilidad_docs.extend(loader.load())
-        logger.info("RAG: Loaded contabilidad.pdf (pages=%s)", len(contabilidad_docs))
-    
-    if os.path.exists(os.path.join(docs_dir, "tesoreria.pdf")):
-        loader = PyPDFLoader(os.path.join(docs_dir, "tesoreria.pdf"))
-        tesoreria_docs.extend(loader.load())
-        logger.info("RAG: Loaded tesoreria.pdf (pages=%s)", len(tesoreria_docs))
-    
-    if os.path.exists(os.path.join(docs_dir, "credito.pdf")):
-        loader = PyPDFLoader(os.path.join(docs_dir, "credito.pdf"))
-        credito_docs.extend(loader.load())
-        logger.info("RAG: Loaded credito.pdf (pages=%s)", len(credito_docs))
-    
-    # Standard text splitter for associado and nominas
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    
-    retrievers = {}
-    
-    if associado_docs:
-        splits = text_splitter.split_documents(associado_docs)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        retrievers["atencion_asociado"] = vectorstore.as_retriever()
-        logger.info("RAG: Indexed atencion_asociado (%s chunks)", len(splits))
-        
-    if nominas_docs:
-        splits = text_splitter.split_documents(nominas_docs)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        retrievers["nominas"] = vectorstore.as_retriever()
-        logger.info("RAG: Indexed nominas (%s chunks)", len(splits))
-
-    if vivienda_docs:
-        # Use specialized splitting for vivienda to keep projects separate
-        logger.info("RAG: Processing vivienda with project-aware chunking")
-        splits = split_vivienda_by_project(vivienda_docs)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        # Increase k to get more relevant chunks since we have fewer, larger chunks
-        retrievers["vivienda"] = vectorstore.as_retriever(search_kwargs={"k": 2})
-        logger.info("RAG: Indexed vivienda (%s project chunks)", len(splits))
-    
-    if convenios_docs:
-        splits = text_splitter.split_documents(convenios_docs)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        retrievers["convenios"] = vectorstore.as_retriever()
-        logger.info("RAG: Indexed convenios (%s chunks)", len(splits))
-    
-    if cartera_docs:
-        splits = text_splitter.split_documents(cartera_docs)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        retrievers["cartera"] = vectorstore.as_retriever()
-        logger.info("RAG: Indexed cartera (%s chunks)", len(splits))
-    
-    if contabilidad_docs:
-        splits = text_splitter.split_documents(contabilidad_docs)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        retrievers["contabilidad"] = vectorstore.as_retriever()
-        logger.info("RAG: Indexed contabilidad (%s chunks)", len(splits))
-    
-    if tesoreria_docs:
-        splits = text_splitter.split_documents(tesoreria_docs)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        retrievers["tesoreria"] = vectorstore.as_retriever()
-        logger.info("RAG: Indexed tesoreria (%s chunks)", len(splits))
-    
-    if credito_docs:
-        splits = text_splitter.split_documents(credito_docs)
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        retrievers["credito"] = vectorstore.as_retriever()
-        logger.info("RAG: Indexed credito (%s chunks)", len(splits))
-        
-    if not retrievers:
-        logger.warning("RAG: No documents indexed. Check PDF files and OCR/text extraction.")
-    return retrievers
-
-# Global retrievers instance (lazy loaded)
-_retrievers = None
-
-def get_retrievers():
-    global _retrievers
-    if _retrievers is None:
-        docs_path = os.path.join(os.path.dirname(__file__), "..", "docs")
-        logger.info("RAG: Initializing retrievers")
-        _retrievers = load_and_index_docs(docs_path)
-    return _retrievers
-
+    return search_by_department(query=query, department=retriever_name, k=k)

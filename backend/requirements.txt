@@ -6,7 +6,6 @@ langchain-openai
 langchain-google-genai
 langchain-community
 pypdf
-faiss-cpu
 python-dotenv
 tiktoken
 twilio

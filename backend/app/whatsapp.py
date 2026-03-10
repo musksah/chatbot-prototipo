@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-GRAPH_API_VERSION = "v21.0"
+GRAPH_API_VERSION = "v22.0"
 GRAPH_API_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 
 
@@ -128,15 +128,16 @@ async def send_text_message(to: str, text: str) -> bool:
                 "recipient_type": "individual",
                 "to": to,
                 "type": "text",
-                "text": {"body": chunk},
+                "text": {"preview_url": False, "body": chunk},
             }
 
             try:
                 resp = await client.post(url, headers=headers, json=body)
+                resp_data = resp.text
                 if resp.status_code == 200:
-                    logger.info(f"📤 WhatsApp message sent to ...{to[-4:]}")
+                    logger.info(f"📤 WhatsApp message sent to ...{to[-4:]} | Meta response: {resp_data}")
                 else:
-                    logger.error(f"❌ WhatsApp send failed ({resp.status_code}): {resp.text}")
+                    logger.error(f"❌ WhatsApp send failed ({resp.status_code}): {resp_data}")
                     return False
             except httpx.HTTPError as e:
                 logger.error(f"❌ HTTP error sending WhatsApp message: {e}")

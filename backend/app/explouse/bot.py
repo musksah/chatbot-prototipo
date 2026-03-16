@@ -43,12 +43,12 @@ _histories: dict[str, list] = defaultdict(list)
 MAX_HISTORY = 20  # keep last N messages to avoid token bloat
 
 
-def _build_llm() -> ChatGoogleGenerativeAI:
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        google_api_key=os.getenv("GEMINI_API_KEY"),
-        temperature=0.7,
-    )
+# Module-level singleton — avoid re-initializing the HTTP client on every message
+_llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash-lite",
+    google_api_key=os.getenv("GEMINI_API_KEY"),
+    temperature=0.7,
+)
 
 
 async def get_response(text: str, thread_id: str) -> str:
@@ -74,8 +74,7 @@ async def get_response(text: str, thread_id: str) -> str:
     messages = [SystemMessage(content=EXPLOUSE_SYSTEM_PROMPT)] + history
 
     try:
-        llm = _build_llm()
-        result = await llm.ainvoke(messages)
+        result = await _llm.ainvoke(messages)
         response_text = result.content or "Lo siento, no pude generar una respuesta."
 
         # Save assistant response to history

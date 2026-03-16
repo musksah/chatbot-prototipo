@@ -1,0 +1,15 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - --build-arg
+      - VITE_API_URL=https://chatbot-backend-cabzpqrleq-uc.a.run.app
+      - -t
+      - us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-frontend
+      - .
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - push
+      - us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-frontend
+images:
+  - us-central1-docker.pkg.dev/corvus-data-testing/chatbot-repo/chatbot-frontend

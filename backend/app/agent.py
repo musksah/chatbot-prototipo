@@ -238,7 +238,7 @@ def pop_dialog_state(state: State) -> dict:
 
 # --- Prompts & Runnables ---
 
-llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview") # Using Gemini for routing and reasoning
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite") # Using Gemini for routing and reasoning
 
 # Intent-Preserving Summarization Prompt
 SUMMARIZATION_PROMPT = """Tu objetivo es comprimir la conversación sin perder los 'triggers' de enrutamiento.
@@ -574,7 +574,7 @@ certificados_runnable = certificados_prompt | llm.bind_tools(certificados_tools)
 # without breaking tool call context.
 
 # Separate LLM for summarization (without tools) to avoid Gemini ordering issues
-summarization_llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+summarization_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite")
 
 _summarization_node_internal = SummarizationNode(
     token_counter=count_tokens_approximately,

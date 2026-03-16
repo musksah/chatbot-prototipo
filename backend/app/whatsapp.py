@@ -101,8 +101,11 @@ async def send_text_message(
     max_len = 4000
     chunks = [text[i:i + max_len] for i in range(0, len(text), max_len)]
 
+    total_chunks = len(chunks)
+    logger.info(f"📤 Sending message to +{to} ({total_chunks} chunk(s), {len(text)} chars)")
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks, 1):
             body = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
@@ -113,12 +116,12 @@ async def send_text_message(
             try:
                 resp = await client.post(url, headers=headers, json=body)
                 if resp.status_code == 200:
-                    logger.info(f"📤 Message sent to ...{to[-4:]} | {resp.text}")
+                    logger.info(f"✅ Chunk {i}/{total_chunks} delivered to +{to}")
                 else:
-                    logger.error(f"❌ WhatsApp send failed ({resp.status_code}): {resp.text}")
+                    logger.error(f"❌ WhatsApp send failed ({resp.status_code}) to +{to}: {resp.text}")
                     return False
             except httpx.HTTPError as e:
-                logger.error(f"❌ HTTP error sending WhatsApp message: {e}")
+                logger.error(f"❌ HTTP error sending to +{to}: {e}")
                 return False
 
     return True
@@ -213,7 +216,11 @@ async def handle_cootradecun(
     config = {"configurable": {"thread_id": thread_id}}
     inputs = {"messages": [HumanMessage(content=text)], "context": {}}
 
-    logger.info(f"📥 [Cootradecun] Message from ...{sender_phone[-4:]}: '{text[:80]}'")
+    logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"📨 Nuevo mensaje → Cootradecun")
+    logger.info(f"   De:      +{sender_phone} ({sender_name})")
+    logger.info(f"   Mensaje: {text[:120]}")
+    logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     try:
         await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)
@@ -279,7 +286,12 @@ async def handle_explouse(
     from .explouse.bot import get_response
 
     thread_id = f"wa-{sender_phone}"
-    logger.info(f"📥 [Explouse] Message from ...{sender_phone[-4:]}: '{text[:80]}'")
+
+    logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"📨 Nuevo mensaje → Xplouse")
+    logger.info(f"   De:      +{sender_phone} ({sender_name})")
+    logger.info(f"   Mensaje: {text[:120]}")
+    logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     try:
         await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)

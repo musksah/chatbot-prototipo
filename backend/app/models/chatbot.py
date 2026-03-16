@@ -27,6 +27,7 @@ class Conversation(Base):
     tokens_input = Column(Integer, nullable=True, comment="Input tokens used")
     tokens_output = Column(Integer, nullable=True, comment="Output tokens used")
     response_time_ms = Column(Integer, nullable=True, comment="Response time in milliseconds")
+    tenant = Column(String(100), nullable=True, comment="Tenant name (e.g. Cootradecun, Explouse)")
     created_at = Column(DateTime(timezone=True), nullable=True, default=datetime.utcnow)
 
     __table_args__ = (

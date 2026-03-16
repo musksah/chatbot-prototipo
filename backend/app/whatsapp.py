@@ -2,51 +2,23 @@
 WhatsApp Business Cloud API Integration Module.
 
 Handles incoming webhook events from Meta and sends replies
-via the WhatsApp Cloud API (Graph API v21.0).
+via the WhatsApp Cloud API (Graph API v22.0).
 
-This module works alongside the existing React frontend —
-both channels share the same LangGraph agent and checkpointer.
+Supports multiple tenants (WABAs): credentials (access_token,
+phone_number_id) are passed per-call instead of read from globals,
+allowing different bots to share this module.
 """
 
-import os
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 import httpx
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 
-# --- Configuration (from environment) ---
-WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
-WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
-WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 GRAPH_API_VERSION = "v22.0"
 GRAPH_API_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
-
-
-def is_whatsapp_configured() -> bool:
-    """Check if all required WhatsApp env vars are set."""
-    return all([WHATSAPP_VERIFY_TOKEN, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID])
-
-
-# ── Webhook verification (GET) ──────────────────────────────────────
-
-def verify_webhook(mode: Optional[str], token: Optional[str], challenge: Optional[str]) -> Tuple[bool, str]:
-    """
-    Verify the webhook subscription request from Meta.
-
-    Meta sends a GET with hub.mode, hub.verify_token, and hub.challenge.
-    We must return the challenge string if the token matches.
-
-    Returns:
-        (success, challenge_or_error_message)
-    """
-    if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
-        logger.info("✅ WhatsApp webhook verified successfully")
-        return True, challenge or ""
-    logger.warning("❌ WhatsApp webhook verification failed (token mismatch)")
-    return False, "Verification failed"
 
 
 # ── Parse incoming message ───────────────────────────────────────────
@@ -55,8 +27,10 @@ def parse_incoming_message(payload: dict) -> Optional[dict]:
     """
     Extract the first text message from a WhatsApp webhook payload.
 
-    Returns a dict with keys: sender, text, message_id, name
+    Returns a dict with keys: sender, text, message_id, name, phone_number_id
     or None if the payload doesn't contain a user text message.
+
+    phone_number_id identifies which WABA/tenant the message belongs to.
     """
     try:
         entry = payload.get("entry", [])
@@ -74,20 +48,23 @@ def parse_incoming_message(payload: dict) -> Optional[dict]:
 
         msg = messages[0]
 
-        # Only handle text messages for now
         if msg.get("type") != "text":
             logger.info(f"⏭️ Ignoring non-text message type: {msg.get('type')}")
             return None
 
-        # Extract sender name from contacts if available
+        # Identify the receiving WABA phone number
+        metadata = value.get("metadata", {})
+        phone_number_id = metadata.get("phone_number_id")
+
         contacts = value.get("contacts", [])
         sender_name = contacts[0].get("profile", {}).get("name", "Usuario") if contacts else "Usuario"
 
         return {
-            "sender": msg["from"],         # phone number (e.g. "573001234567")
+            "sender": msg["from"],
             "text": msg["text"]["body"],
             "message_id": msg["id"],
             "name": sender_name,
+            "phone_number_id": phone_number_id,  # used for tenant routing
         }
 
     except (KeyError, IndexError) as e:
@@ -97,28 +74,31 @@ def parse_incoming_message(payload: dict) -> Optional[dict]:
 
 # ── Send message via Graph API ───────────────────────────────────────
 
-async def send_text_message(to: str, text: str) -> bool:
+async def send_text_message(
+    to: str,
+    text: str,
+    phone_number_id: str,
+    access_token: str,
+) -> bool:
     """
     Send a text message to a WhatsApp user via the Cloud API.
 
-    WhatsApp has a 4096-character limit per message, so we split
-    long responses into multiple messages.
+    WhatsApp has a 4096-character limit per message, so long responses
+    are split into multiple messages.
 
     Args:
-        to:   Recipient phone number (without '+')
-        text: Message content
-
-    Returns:
-        True if all message parts were sent successfully
+        to:               Recipient phone number (without '+')
+        text:             Message content
+        phone_number_id:  The sending WABA phone number ID
+        access_token:     The WABA access token
     """
-    url = f"{GRAPH_API_URL}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    url = f"{GRAPH_API_URL}/{phone_number_id}/messages"
     headers = {
-        "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
 
-    # Split long messages (WhatsApp limit: 4096 chars)
-    max_len = 4000  # Leave some margin
+    max_len = 4000
     chunks = [text[i:i + max_len] for i in range(0, len(text), max_len)]
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -130,14 +110,12 @@ async def send_text_message(to: str, text: str) -> bool:
                 "type": "text",
                 "text": {"preview_url": False, "body": chunk},
             }
-
             try:
                 resp = await client.post(url, headers=headers, json=body)
-                resp_data = resp.text
                 if resp.status_code == 200:
-                    logger.info(f"📤 WhatsApp message sent to ...{to[-4:]} | Meta response: {resp_data}")
+                    logger.info(f"📤 Message sent to ...{to[-4:]} | {resp.text}")
                 else:
-                    logger.error(f"❌ WhatsApp send failed ({resp.status_code}): {resp_data}")
+                    logger.error(f"❌ WhatsApp send failed ({resp.status_code}): {resp.text}")
                     return False
             except httpx.HTTPError as e:
                 logger.error(f"❌ HTTP error sending WhatsApp message: {e}")
@@ -148,11 +126,15 @@ async def send_text_message(to: str, text: str) -> bool:
 
 # ── Mark message as read ─────────────────────────────────────────────
 
-async def mark_as_read(message_id: str) -> None:
+async def mark_as_read(
+    message_id: str,
+    phone_number_id: str,
+    access_token: str,
+) -> None:
     """Mark an incoming message as read (shows blue ticks)."""
-    url = f"{GRAPH_API_URL}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    url = f"{GRAPH_API_URL}/{phone_number_id}/messages"
     headers = {
-        "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
     body = {
@@ -160,15 +142,14 @@ async def mark_as_read(message_id: str) -> None:
         "status": "read",
         "message_id": message_id,
     }
-
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             await client.post(url, headers=headers, json=body)
         except httpx.HTTPError:
-            pass  # Non-critical, don't fail on read receipts
+            pass
 
 
-# ── Process message through the chatbot ──────────────────────────────
+# ── Save message to DB ───────────────────────────────────────────────
 
 async def save_message(
     session_id: str,
@@ -178,6 +159,7 @@ async def save_message(
     message: str,
     wa_message_id: str = None,
     department: str = None,
+    tenant: str = None,
 ) -> None:
     """Save a message to the conversations table."""
     try:
@@ -201,6 +183,7 @@ async def save_message(
                 message=message,
                 wa_message_id=wa_message_id,
                 department=department,
+                tenant=tenant,
                 message_type="text",
                 created_at=datetime.utcnow(),
             )
@@ -210,37 +193,30 @@ async def save_message(
         logger.error(f"⚠️ Failed to save message to DB: {e}")
 
 
-async def process_whatsapp_message(
+# ── Tenant handlers ───────────────────────────────────────────────────
+# These are imported and registered in main.py so they can reference
+# the compiled graph (Cootradecun) or the simple LLM (Explouse).
+
+async def handle_cootradecun(
     sender_phone: str,
     text: str,
     message_id: str,
-    graph_with_memory,
+    tenant,  # TenantConfig
     sender_name: str = "Usuario",
+    graph_with_memory=None,
 ) -> None:
     """
-    Process an incoming WhatsApp message through the LangGraph agent
-    and send the response back via WhatsApp.
-
-    Uses the sender's phone number as the thread_id so conversation
-    state persists across messages (same as React frontend uses
-    thread_id for its sessions).
+    Process a Cootradecun message through the LangGraph multi-agent system.
+    graph_with_memory is injected via functools.partial in main.py.
     """
-    # Use phone number as thread_id for conversation persistence
     thread_id = f"wa-{sender_phone}"
     config = {"configurable": {"thread_id": thread_id}}
+    inputs = {"messages": [HumanMessage(content=text)], "context": {}}
 
-    inputs = {
-        "messages": [HumanMessage(content=text)],
-        "context": {},
-    }
-
-    logger.info(f"📥 WhatsApp message from ...{sender_phone[-4:]}: '{text[:80]}...'")
+    logger.info(f"📥 [Cootradecun] Message from ...{sender_phone[-4:]}: '{text[:80]}'")
 
     try:
-        # Mark as read immediately (shows blue ticks)
-        await mark_as_read(message_id)
-
-        # Save incoming user message to database
+        await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)
         await save_message(
             session_id=thread_id,
             user_phone=sender_phone,
@@ -248,50 +224,99 @@ async def process_whatsapp_message(
             role="user",
             message=text,
             wa_message_id=message_id,
+            tenant=tenant.name,
         )
 
-        # Invoke the same graph used by the React frontend
         final_state = graph_with_memory.invoke(inputs, config=config)
-
-        # Extract the AI response
         messages = final_state.get("messages", [])
         last_message = messages[-1] if messages else None
 
         if isinstance(last_message, AIMessage) and last_message.content:
             content = last_message.content
-            # Handle Gemini's list-style content
             if isinstance(content, list):
                 content = content[0].get("text", "") if content else ""
-
             response_text = content or "Lo siento, no pude generar una respuesta."
         else:
             response_text = "Lo siento, hubo un error procesando tu solicitud."
 
-        # Send response back via WhatsApp
-        success = await send_text_message(sender_phone, response_text)
-
-        # Save assistant response to database
+        success = await send_text_message(
+            sender_phone, response_text,
+            tenant.phone_number_id, tenant.access_token,
+        )
         await save_message(
             session_id=thread_id,
             user_phone=sender_phone,
             user_name=sender_name,
             role="assistant",
             message=response_text,
+            tenant=tenant.name,
         )
-
         if success:
-            logger.info(f"✅ WhatsApp reply sent to ...{sender_phone[-4:]} ({len(response_text)} chars)")
-        else:
-            logger.error(f"❌ Failed to send WhatsApp reply to ...{sender_phone[-4:]}")
+            logger.info(f"✅ [Cootradecun] Reply sent to ...{sender_phone[-4:]}")
 
     except Exception as e:
-        logger.error(f"❌ Error processing WhatsApp message: {e}")
-        # Try to send an error message back to the user
+        logger.error(f"❌ [Cootradecun] Error: {e}")
         try:
             await send_text_message(
                 sender_phone,
-                "Lo siento, ocurrió un error. Por favor intenta de nuevo en un momento. 🙏"
+                "Lo siento, ocurrió un error. Por favor intenta de nuevo. 🙏",
+                tenant.phone_number_id, tenant.access_token,
             )
         except Exception:
             pass
 
+
+async def handle_explouse(
+    sender_phone: str,
+    text: str,
+    message_id: str,
+    tenant,  # TenantConfig
+    sender_name: str = "Usuario",
+) -> None:
+    """
+    Process an Explouse message through the simple direct LLM bot.
+    """
+    from .explouse.bot import get_response
+
+    thread_id = f"wa-{sender_phone}"
+    logger.info(f"📥 [Explouse] Message from ...{sender_phone[-4:]}: '{text[:80]}'")
+
+    try:
+        await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)
+        await save_message(
+            session_id=thread_id,
+            user_phone=sender_phone,
+            user_name=sender_name,
+            role="user",
+            message=text,
+            wa_message_id=message_id,
+            tenant=tenant.name,
+        )
+
+        response_text = await get_response(text, thread_id=thread_id)
+
+        success = await send_text_message(
+            sender_phone, response_text,
+            tenant.phone_number_id, tenant.access_token,
+        )
+        await save_message(
+            session_id=thread_id,
+            user_phone=sender_phone,
+            user_name=sender_name,
+            role="assistant",
+            message=response_text,
+            tenant=tenant.name,
+        )
+        if success:
+            logger.info(f"✅ [Explouse] Reply sent to ...{sender_phone[-4:]}")
+
+    except Exception as e:
+        logger.error(f"❌ [Explouse] Error: {e}")
+        try:
+            await send_text_message(
+                sender_phone,
+                "Lo siento, ocurrió un error. Por favor intenta de nuevo. 🙏",
+                tenant.phone_number_id, tenant.access_token,
+            )
+        except Exception:
+            pass

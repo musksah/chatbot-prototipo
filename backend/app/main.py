@@ -1,6 +1,9 @@
 import uuid
+import os
+import logging
+import functools
 from dotenv import load_dotenv
-load_dotenv() # Load env vars from .env file
+load_dotenv()
 
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
@@ -11,13 +14,11 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from .agent import graph
 
-app = FastAPI(title="Cootradecun Chatbot API")
+app = FastAPI(title="Corvus Chatbot API")
 
-# Register conversations API router
 from .api.conversations import router as conversations_router
 app.include_router(conversations_router, prefix="/api")
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,7 +27,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Health check endpoint for Cloud Run
+logger = logging.getLogger(__name__)
+
+
+# ── Health checks ────────────────────────────────────────────────────
+
 @app.get("/")
 async def health_check():
     return {"status": "healthy", "service": "chatbot-backend"}
@@ -36,11 +41,10 @@ async def health():
     return {"status": "ok"}
 
 
+# ── DB init on startup ───────────────────────────────────────────────
+
 @app.on_event("startup")
 async def startup_event():
-    """Create database tables on startup."""
-    import logging
-    logger = logging.getLogger(__name__)
     try:
         from .database import create_tables
         await create_tables()
@@ -48,54 +52,70 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"⚠️ Could not create DB tables (non-fatal): {e}")
 
-@app.get("/debug-gcs")
-async def debug_gcs():
-    import google.auth
-    from google.auth.transport import requests as auth_requests
-    from .gcs_storage import upload_and_get_signed_url
-    from . import gcs_storage
-    from io import BytesIO
-    import traceback
-    import os
-    import inspect
-    
-    debug_info = {}
-    
+
+# ── Checkpointer (PostgreSQL → MemorySaver fallback) ────────────────
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+checkpointer = None
+
+if DATABASE_URL:
     try:
-        # Check credentials
-        credentials, project = google.auth.default()
-        if not hasattr(credentials, 'service_account_email') or not credentials.service_account_email:
-            auth_request = auth_requests.Request()
-            credentials.refresh(auth_request)
-            
-        debug_info["service_account_from_auth"] = getattr(credentials, "service_account_email", "Not found")
-        debug_info["project"] = project
-        
-        # Check Env Var
-        debug_info["env_service_account_email"] = os.getenv("SERVICE_ACCOUNT_EMAIL", "MISSING_OR_EMPTY")
-        
-        # Check Source Code to verify deployment update
-        try:
-            source = inspect.getsource(gcs_storage.generate_signed_url)
-            debug_info["source_snippet"] = source[:1000] # Enough to see the fallback logic
-        except Exception as source_e:
-             debug_info["source_error"] = str(source_e)
-        
-        # Try upload
-        dummy_pdf = BytesIO(b"PDF de prueba para debugging")
-        success, result = upload_and_get_signed_url(dummy_pdf, "debug_test", expiration_hours=1)
-        
-        return {
-            "success": success,
-            "result": result,
-            "debug_info": debug_info
-        }
+        from psycopg_pool import ConnectionPool
+        from langgraph.checkpoint.postgres import PostgresSaver
+
+        pool = ConnectionPool(
+            conninfo=DATABASE_URL,
+            max_size=10,
+            min_size=1,
+            max_lifetime=3600,
+            reconnect_timeout=30,
+            check=ConnectionPool.check_connection,
+        )
+        checkpointer = PostgresSaver(pool)
+        logger.info("✅ PostgresSaver inicializado correctamente con Cloud SQL")
     except Exception as e:
-        return {
-            "error": str(e),
-            "traceback": traceback.format_exc(),
-            "debug_info": debug_info
-        }
+        logger.error(f"❌ Error al conectar PostgresSaver: {e}")
+        checkpointer = None
+
+if checkpointer is None:
+    from langgraph.checkpoint.memory import MemorySaver
+    checkpointer = MemorySaver()
+    if DATABASE_URL:
+        logger.warning("⚠️ PostgreSQL falló. Usando MemorySaver como fallback.")
+    else:
+        logger.warning("⚠️ DATABASE_URL no configurado. Usando MemorySaver.")
+
+from .agent import builder
+graph_with_memory = builder.compile(checkpointer=checkpointer)
+
+
+# ── Tenant registration ──────────────────────────────────────────────
+
+from .tenants import TenantConfig, register_tenant
+from .whatsapp import handle_cootradecun, handle_explouse
+
+# Cootradecun — LangGraph multi-agent
+_cootradecun_handler = functools.partial(handle_cootradecun, graph_with_memory=graph_with_memory)
+
+register_tenant(TenantConfig(
+    name="Cootradecun",
+    phone_number_id=os.getenv("COOTRADECUN_PHONE_NUMBER_ID", ""),
+    access_token=os.getenv("COOTRADECUN_ACCESS_TOKEN", ""),
+    verify_token=os.getenv("COOTRADECUN_VERIFY_TOKEN", ""),
+    handler=_cootradecun_handler,
+))
+
+# Explouse — simple direct LLM
+register_tenant(TenantConfig(
+    name="Xplouse",
+    phone_number_id=os.getenv("EXPLOUSE_PHONE_NUMBER_ID", ""),
+    access_token=os.getenv("EXPLOUSE_ACCESS_TOKEN", ""),
+    verify_token=os.getenv("EXPLOUSE_VERIFY_TOKEN", ""),
+    handler=handle_explouse,
+))
+
+
+# ── Chat endpoint (React frontend — Cootradecun only) ────────────────
 
 class ChatRequest(BaseModel):
     message: str
@@ -105,189 +125,111 @@ class ChatResponse(BaseModel):
     messages: List[Dict[str, Any]]
     thread_id: str
 
-# --- Checkpointer Configuration ---
-# PostgresSaver for production (multi-instance Cloud Run)
-# MemorySaver as fallback for local dev without database
-
-
-import os
-import logging
-
-# Configure checkpointer based on DATABASE_URL availability
-DATABASE_URL = os.getenv("DATABASE_URL")
-logger = logging.getLogger(__name__)
-
-checkpointer = None
-
-if DATABASE_URL:
-    # Use PostgreSQL for multi-instance persistence (Cloud Run)
-    # NOTE: Tables must be created manually - see backend/docs/checkpoint_tables.sql
-    try:
-        from psycopg_pool import ConnectionPool
-        from langgraph.checkpoint.postgres import PostgresSaver
-        
-        # Create a connection pool with reconnection handling
-        # - max_lifetime: close connections after 1 hour to avoid stale connections
-        # - reconnect_timeout: time to wait for reconnection
-        # - check: validate connections before borrowing from pool
-        pool = ConnectionPool(
-            conninfo=DATABASE_URL,
-            max_size=10,
-            min_size=1,
-            max_lifetime=3600,  # 1 hour - prevents stale connections after inactivity
-            reconnect_timeout=30,
-            check=ConnectionPool.check_connection,  # Validate connection is alive
-        )
-        
-        # Create PostgresSaver with the pool (tables must exist)
-        checkpointer = PostgresSaver(pool)
-        
-        logger.info("✅ PostgresSaver inicializado correctamente con Cloud SQL")
-    except Exception as e:
-        logger.error(f"❌ Error al conectar PostgresSaver: {e}")
-        logger.warning("⚠️ Fallback a MemorySaver (no persistente)")
-        checkpointer = None
-
-if checkpointer is None:
-    # Fallback to in-memory for local dev without database
-    from langgraph.checkpoint.memory import MemorySaver
-    checkpointer = MemorySaver()
-    if DATABASE_URL:
-        logger.warning("⚠️ PostgreSQL falló. Usando MemorySaver como fallback.")
-    else:
-        logger.warning("⚠️ DATABASE_URL no configurado. Usando MemorySaver (no persistente entre instancias).")
-
-# Re-compile graph with checkpointer
-from .agent import builder
-graph_with_memory = builder.compile(checkpointer=checkpointer)
-
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     thread_id = request.thread_id or str(uuid.uuid4())
-    
     config = {"configurable": {"thread_id": thread_id}}
-    
-    inputs = {
-        "messages": [HumanMessage(content=request.message)],
-        "context": {},  # Required for SummarizationNode to work
-    }
-    
-    # Log incoming request
-    import logging
-    logger = logging.getLogger(__name__)
+    inputs = {"messages": [HumanMessage(content=request.message)], "context": {}}
+
     logger.info(f"📥 New message from thread {thread_id}: '{request.message[:50]}...'")
-    
-    # Check current state before invocation
+
     current_state = graph_with_memory.get_state(config)
     if current_state and current_state.values:
         dialog_state = current_state.values.get("dialog_state", [])
         msg_count = len(current_state.values.get("messages", []))
         logger.info(f"📊 Current state: dialog_stack={dialog_state}, messages={msg_count}")
     else:
-        logger.info(f"📊 No prior state for this thread (new conversation)")
-    
-    # We want to stream the output or get the final state.
-    # invoke() returns the final state.
+        logger.info("📊 No prior state for this thread (new conversation)")
+
     try:
         final_state = graph_with_memory.invoke(inputs, config=config)
-        
-        # Log the final state for debugging
-        logger.info(f"📤 Final state keys: {final_state.keys()}")
-        
-        # Extract the last message if it's an AI message
         messages = final_state.get("messages", [])
-        logger.info(f"📤 Total messages in state: {len(messages)}")
-        
         last_message = messages[-1] if messages else None
-        
-        if last_message:
-            logger.info(f"📤 Last message type: {type(last_message).__name__}")
-            logger.info(f"📤 Last message content: {str(last_message.content)[:100] if last_message.content else 'None/Empty'}")
-        
-        response_messages = []
+
         if isinstance(last_message, AIMessage):
             content = last_message.content
-            # Handle case where content might be a list (Gemini format)
             if isinstance(content, list):
                 content = content[0].get("text", "") if content else ""
-            response_messages.append({"role": "assistant", "content": content or "No pude generar una respuesta."})
+            response_messages = [{"role": "assistant", "content": content or "No pude generar una respuesta."}]
         else:
-            # If the last message wasn't AI (unlikely unless error), send something generic
-            response_messages.append({"role": "assistant", "content": "Lo siento, hubo un error procesando tu solicitud."})
+            response_messages = [{"role": "assistant", "content": "Lo siento, hubo un error procesando tu solicitud."}]
 
-        return ChatResponse(
-            messages=response_messages,
-            thread_id=thread_id
-        )
+        return ChatResponse(messages=response_messages, thread_id=thread_id)
 
     except Exception as e:
         import traceback
-        logger.error(f"❌ Error in chat_endpoint: {str(e)}")
-        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        logger.error(f"❌ Error in chat_endpoint: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- WhatsApp Webhook Endpoints ---
+# ── WhatsApp Webhook ─────────────────────────────────────────────────
 
-from .whatsapp import (
-    verify_webhook,
-    parse_incoming_message,
-    process_whatsapp_message,
-    is_whatsapp_configured,
-)
+from .tenants import get_tenant, get_tenant_by_verify_token
+from .whatsapp import parse_incoming_message
+
 
 @app.get("/webhook/whatsapp")
 async def whatsapp_webhook_verify(request: Request):
     """
-    Webhook verification endpoint (required by Meta).
-    Meta sends a GET with hub.mode, hub.verify_token, and hub.challenge.
+    Webhook verification (GET) — shared by all tenants.
+    Meta sends hub.verify_token; we look it up in the tenant registry.
     """
     mode = request.query_params.get("hub.mode")
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
 
-    success, result = verify_webhook(mode, token, challenge)
+    tenant = get_tenant_by_verify_token(token)
+    if mode == "subscribe" and tenant:
+        logger.info(f"✅ Webhook verified for tenant: {tenant.name}")
+        return PlainTextResponse(content=challenge or "", status_code=200)
 
-    if success:
-        return PlainTextResponse(content=result, status_code=200)
-    else:
-        raise HTTPException(status_code=403, detail=result)
+    logger.warning(f"❌ Webhook verification failed — unknown token: {token!r}")
+    raise HTTPException(status_code=403, detail="Verification failed")
 
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook_receive(request: Request, background_tasks: BackgroundTasks):
     """
-    Receive incoming WhatsApp messages from Meta.
-    Returns 200 immediately and processes the message in the background
-    so Meta doesn't time out waiting for the LLM response.
+    Receive incoming WhatsApp messages from any registered tenant.
+    Returns 200 immediately; processing happens in the background.
     """
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # Meta sometimes sends status updates (delivered, read) — ignore them
     parsed = parse_incoming_message(payload)
 
     if parsed:
-        # Process in background so we return 200 to Meta quickly
-        background_tasks.add_task(
-            process_whatsapp_message,
-            sender_phone=parsed["sender"],
-            text=parsed["text"],
-            message_id=parsed["message_id"],
-            graph_with_memory=graph_with_memory,
-            sender_name=parsed["name"],
-        )
+        tenant = get_tenant(parsed["phone_number_id"])
+        if tenant:
+            background_tasks.add_task(
+                tenant.handler,
+                sender_phone=parsed["sender"],
+                text=parsed["text"],
+                message_id=parsed["message_id"],
+                tenant=tenant,
+                sender_name=parsed["name"],
+            )
+        else:
+            logger.warning(
+                f"⚠️ No tenant found for phone_number_id={parsed['phone_number_id']!r} — message ignored."
+            )
 
-    # Always return 200 to Meta (even if no message to process)
     return {"status": "ok"}
 
 
 @app.get("/whatsapp/status")
 async def whatsapp_status():
-    """Check if WhatsApp integration is configured."""
+    """List all registered tenants and their configuration status."""
+    from .tenants import registered_tenants
     return {
-        "configured": is_whatsapp_configured(),
-        "phone_number_id": os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")[-4:] if os.getenv("WHATSAPP_PHONE_NUMBER_ID") else None,
+        "tenants": [
+            {
+                "name": t.name,
+                "phone_number_id_suffix": t.phone_number_id[-4:] if t.phone_number_id else None,
+                "configured": bool(t.phone_number_id and t.access_token and t.verify_token),
+            }
+            for t in registered_tenants()
+        ]
     }

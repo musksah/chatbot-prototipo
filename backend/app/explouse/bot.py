@@ -45,7 +45,7 @@ MAX_HISTORY = 20  # keep last N messages to avoid token bloat
 
 # Module-level singleton — avoid re-initializing the HTTP client on every message
 _llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite",
+    model="gemini-3.1-flash-lite-preview",
     google_api_key=os.getenv("GEMINI_API_KEY"),
     temperature=0.7,
 )

@@ -82,7 +82,7 @@ def _expand_query(query: str) -> list[str]:
         return [query]
     
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0.3)
+        llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0.3)
         prompt = (
             f"Eres un asistente de búsqueda para COOTRADECUN (una cooperativa colombiana). "
             f"Genera exactamente 2 reformulaciones alternativas de la siguiente pregunta "

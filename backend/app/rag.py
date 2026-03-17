@@ -192,7 +192,7 @@ def _rerank_chunks(query: str, chunks: list[dict], top_k: int = DEFAULT_K) -> li
         return chunks  # No need to re-rank if fewer than top_k
     
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0)
+        llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0)
         
         numbered_chunks = "\n\n".join([
             f"[{i+1}] {c['content'][:500]}" for i, c in enumerate(chunks)

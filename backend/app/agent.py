@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from typing import Annotated, Literal, Optional
 from typing_extensions import TypedDict
@@ -238,7 +239,13 @@ def pop_dialog_state(state: State) -> dict:
 
 # --- Prompts & Runnables ---
 
-llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview") # Using Gemini for routing and reasoning
+# Support both GEMINI_API_KEY (project convention) and GOOGLE_API_KEY (langchain default)
+_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite-preview",
+    google_api_key=_GEMINI_API_KEY,
+) # Using Gemini for routing and reasoning
 
 # Intent-Preserving Summarization Prompt
 SUMMARIZATION_PROMPT = """Tu objetivo es comprimir la conversación sin perder los 'triggers' de enrutamiento.
@@ -574,7 +581,10 @@ certificados_runnable = certificados_prompt | llm.bind_tools(certificados_tools)
 # without breaking tool call context.
 
 # Separate LLM for summarization (without tools) to avoid Gemini ordering issues
-summarization_llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview")
+summarization_llm = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite-preview",
+    google_api_key=_GEMINI_API_KEY,
+)
 
 _summarization_node_internal = SummarizationNode(
     token_counter=count_tokens_approximately,

@@ -22,7 +22,13 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 DATABASE_URL = os.getenv("DATABASE_URL")
-embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
+
+# Support both GEMINI_API_KEY (project convention) and GOOGLE_API_KEY (langchain default)
+_GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/gemini-embedding-001",
+    google_api_key=_GOOGLE_API_KEY,
+)
 
 # Retrieval parameters
 DEFAULT_K = 4              # Final number of chunks returned to LLM

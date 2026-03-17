@@ -75,7 +75,16 @@ async def get_response(text: str, thread_id: str) -> str:
 
     try:
         result = await _llm.ainvoke(messages)
-        response_text = result.content or "Lo siento, no pude generar una respuesta."
+        content = result.content
+
+        # Gemini with AFC may return content as a list of dicts instead of a plain string
+        if isinstance(content, list):
+            content = next(
+                (item.get("text", "") for item in content if isinstance(item, dict) and item.get("text")),
+                ""
+            )
+
+        response_text = content or "Lo siento, no pude generar una respuesta."
 
         # Save assistant response to history
         history.append(AIMessage(content=response_text))

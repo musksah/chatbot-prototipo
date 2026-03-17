@@ -10,12 +10,32 @@ allowing different bots to share this module.
 """
 
 import logging
+import time
 from typing import Optional
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
+
+
+# ── Fallback detection ───────────────────────────────────────────────
+
+_FALLBACK_PHRASES = (
+    "lo siento, ocurrió un error",
+    "no pude generar una respuesta",
+    "hubo un error procesando",
+    "lo siento, ocurrió un error. por favor intenta de nuevo",
+)
+
+
+def _is_fallback(text) -> bool:
+    """Detecta si la respuesta del bot es un mensaje de error/fallback."""
+    # Gemini can return a list in AFC mode — safely extract text first
+    if isinstance(text, list):
+        text = text[0].get("text", "") if text else ""
+    lowered = str(text).lower()
+    return any(phrase in lowered for phrase in _FALLBACK_PHRASES)
 
 GRAPH_API_VERSION = "v22.0"
 GRAPH_API_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
@@ -211,7 +231,15 @@ async def handle_cootradecun(
     """
     Process a Cootradecun message through the LangGraph multi-agent system.
     graph_with_memory is injected via functools.partial in main.py.
+
+    Dual-write: writes to the legacy `conversations` table AND to the v3.0 schema
+    (whatsapp_contacts, sessions, interaction_log). Both writes are independent.
+
+    Sessions span 24 hours — close_session is NOT called here anymore.
+    The session stays active until upsert_session detects a 24h gap on the next message.
     """
+    from .db_writer import upsert_contact, upsert_session, log_interaction
+
     thread_id = f"wa-{sender_phone}"
     config = {"configurable": {"thread_id": thread_id}}
     inputs = {"messages": [HumanMessage(content=text)], "context": {}}
@@ -222,8 +250,14 @@ async def handle_cootradecun(
     logger.info(f"   Mensaje: {text[:120]}")
     logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+    # ── v3.0: register contact and session BEFORE processing ─────────
+    contact_id = await upsert_contact(sender_phone, sender_name)
+    session_id_v3 = await upsert_session(contact_id, thread_id) if contact_id else None
+
     try:
         await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)
+
+        # ── Legacy: save user message ────────────────────────────────
         await save_message(
             session_id=thread_id,
             user_phone=sender_phone,
@@ -233,8 +267,15 @@ async def handle_cootradecun(
             wa_message_id=message_id,
             tenant=tenant.name,
         )
+        # ── v3.0: log user interaction ───────────────────────────────
+        if session_id_v3:
+            await log_interaction(session_id_v3, "user")
 
+        # ── Invoke the agent and measure latency ─────────────────────
+        t_start = time.monotonic()
         final_state = graph_with_memory.invoke(inputs, config=config)
+        elapsed_ms = int((time.monotonic() - t_start) * 1000)
+
         messages = final_state.get("messages", [])
         last_message = messages[-1] if messages else None
 
@@ -246,10 +287,14 @@ async def handle_cootradecun(
         else:
             response_text = "Lo siento, hubo un error procesando tu solicitud."
 
+        bot_is_fallback = _is_fallback(response_text)
+
         success = await send_text_message(
             sender_phone, response_text,
             tenant.phone_number_id, tenant.access_token,
         )
+
+        # ── Legacy: save bot response ────────────────────────────────
         await save_message(
             session_id=thread_id,
             user_phone=sender_phone,
@@ -258,8 +303,17 @@ async def handle_cootradecun(
             message=response_text,
             tenant=tenant.name,
         )
+        # ── v3.0: log bot interaction ────────────────────────────────
+        if session_id_v3:
+            await log_interaction(
+                session_id_v3, "assistant",
+                response_ms=elapsed_ms,
+                is_fallback=bot_is_fallback,
+                fallback_message=response_text if bot_is_fallback else None,
+            )
+
         if success:
-            logger.info(f"✅ [Cootradecun] Reply sent to ...{sender_phone[-4:]}")
+            logger.info(f"✅ [Cootradecun] Reply sent to ...{sender_phone[-4:]} ({elapsed_ms}ms)")
 
     except Exception as e:
         logger.error(f"❌ [Cootradecun] Error: {e}")
@@ -282,8 +336,14 @@ async def handle_explouse(
 ) -> None:
     """
     Process an Explouse message through the simple direct LLM bot.
+
+    Dual-write: writes to the legacy `conversations` table AND to the v3.0 schema.
+
+    Sessions span 24 hours — close_session is NOT called here anymore.
+    The session stays active until upsert_session detects a 24h gap on the next message.
     """
     from .explouse.bot import get_response
+    from .db_writer import upsert_contact, upsert_session, log_interaction
 
     thread_id = f"wa-{sender_phone}"
 
@@ -293,8 +353,14 @@ async def handle_explouse(
     logger.info(f"   Mensaje: {text[:120]}")
     logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+    # ── v3.0: register contact and session BEFORE processing ─────────
+    contact_id = await upsert_contact(sender_phone, sender_name)
+    session_id_v3 = await upsert_session(contact_id, thread_id) if contact_id else None
+
     try:
         await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)
+
+        # ── Legacy: save user message ────────────────────────────────
         await save_message(
             session_id=thread_id,
             user_phone=sender_phone,
@@ -304,13 +370,23 @@ async def handle_explouse(
             wa_message_id=message_id,
             tenant=tenant.name,
         )
+        # ── v3.0: log user interaction ───────────────────────────────
+        if session_id_v3:
+            await log_interaction(session_id_v3, "user")
 
+        # ── Invoke the bot and measure latency ───────────────────────
+        t_start = time.monotonic()
         response_text = await get_response(text, thread_id=thread_id)
+        elapsed_ms = int((time.monotonic() - t_start) * 1000)
+
+        bot_is_fallback = _is_fallback(response_text)
 
         success = await send_text_message(
             sender_phone, response_text,
             tenant.phone_number_id, tenant.access_token,
         )
+
+        # ── Legacy: save bot response ────────────────────────────────
         await save_message(
             session_id=thread_id,
             user_phone=sender_phone,
@@ -319,8 +395,17 @@ async def handle_explouse(
             message=response_text,
             tenant=tenant.name,
         )
+        # ── v3.0: log bot interaction ────────────────────────────────
+        if session_id_v3:
+            await log_interaction(
+                session_id_v3, "assistant",
+                response_ms=elapsed_ms,
+                is_fallback=bot_is_fallback,
+                fallback_message=response_text if bot_is_fallback else None,
+            )
+
         if success:
-            logger.info(f"✅ [Explouse] Reply sent to ...{sender_phone[-4:]}")
+            logger.info(f"✅ [Explouse] Reply sent to ...{sender_phone[-4:]} ({elapsed_ms}ms)")
 
     except Exception as e:
         logger.error(f"❌ [Explouse] Error: {e}")

@@ -29,3 +29,5 @@ httpx
 # Async database (Conversations model)
 sqlalchemy[asyncio]
 asyncpg
+
+google-cloud-tasks

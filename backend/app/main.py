@@ -191,7 +191,8 @@ async def whatsapp_webhook_verify(request: Request):
 async def whatsapp_webhook_receive(request: Request, background_tasks: BackgroundTasks):
     """
     Receive incoming WhatsApp messages from any registered tenant.
-    Returns 200 immediately; processing happens in the background.
+    Returns 200 immediately; processing is delegated to Cloud Tasks.
+    Falls back to background_tasks if Cloud Tasks is not configured (local dev).
     """
     try:
         payload = await request.json()
@@ -203,20 +204,75 @@ async def whatsapp_webhook_receive(request: Request, background_tasks: Backgroun
     if parsed:
         tenant = get_tenant(parsed["phone_number_id"])
         if tenant:
-            background_tasks.add_task(
-                tenant.handler,
-                sender_phone=parsed["sender"],
-                text=parsed["text"],
-                message_id=parsed["message_id"],
-                tenant=tenant,
-                sender_name=parsed["name"],
-            )
+            from .cloud_tasks import enqueue_message, INTERNAL_SECRET
+
+            if INTERNAL_SECRET:
+                # Production: delegate to Cloud Tasks
+                enqueue_message(parsed, tenant.name)
+            else:
+                # Local dev: fallback to background_tasks
+                logger.info("⚠️ INTERNAL_SECRET not set — using background_tasks (local dev)")
+                background_tasks.add_task(
+                    tenant.handler,
+                    sender_phone=parsed["sender"],
+                    text=parsed["text"],
+                    message_id=parsed["message_id"],
+                    tenant=tenant,
+                    sender_name=parsed["name"],
+                )
         else:
             logger.warning(
                 f"⚠️ No tenant found for phone_number_id={parsed['phone_number_id']!r} — message ignored."
             )
 
     return {"status": "ok"}
+
+
+# ── Internal endpoint for Cloud Tasks ────────────────────────────────
+
+class ProcessMessageRequest(BaseModel):
+    sender: str
+    text: str
+    message_id: str
+    name: str
+    phone_number_id: str
+    tenant_name: str
+
+
+@app.post("/internal/process-message")
+async def internal_process_message(
+    body: ProcessMessageRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Called exclusively by Cloud Tasks to process a WhatsApp message.
+    Validates the X-Internal-Secret header before processing.
+    """
+    from .cloud_tasks import INTERNAL_SECRET
+
+    secret = request.headers.get("X-Internal-Secret", "")
+    if not INTERNAL_SECRET or secret != INTERNAL_SECRET:
+        logger.warning("❌ /internal/process-message: unauthorized request")
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    tenant = get_tenant(body.phone_number_id)
+    if not tenant:
+        logger.warning(f"⚠️ /internal/process-message: unknown phone_number_id={body.phone_number_id!r}")
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    logger.info(f"⚙️ Processing task: tenant={tenant.name} from=+{body.sender}")
+
+    background_tasks.add_task(
+        tenant.handler,
+        sender_phone=body.sender,
+        text=body.text,
+        message_id=body.message_id,
+        tenant=tenant,
+        sender_name=body.name,
+    )
+
+    return {"status": "accepted"}
 
 
 @app.get("/whatsapp/status")

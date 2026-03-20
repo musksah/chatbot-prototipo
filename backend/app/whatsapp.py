@@ -183,6 +183,8 @@ async def save_message(
     wa_message_id: str = None,
     department: str = None,
     tenant: str = None,
+    tokens_input: int = None,
+    tokens_output: int = None,
 ) -> None:
     """Save a message to the conversations table."""
     try:
@@ -207,6 +209,8 @@ async def save_message(
                 wa_message_id=wa_message_id,
                 department=department,
                 tenant=tenant,
+                tokens_input=tokens_input,
+                tokens_output=tokens_output,
                 message_type="text",
                 created_at=datetime.utcnow(),
             )
@@ -287,6 +291,18 @@ async def handle_cootradecun(
         else:
             response_text = "Lo siento, hubo un error procesando tu solicitud."
 
+        # ── Extract token usage from the last AI message ─────────────
+        tokens_in = tokens_out = None
+        if isinstance(last_message, AIMessage):
+            from .agent import _extract_token_usage
+            usage = _extract_token_usage(last_message)
+            tokens_in = usage.get("prompt_tokens")
+            tokens_out = usage.get("completion_tokens")
+            if tokens_in or tokens_out:
+                logger.info(
+                    f"🔢 [Cootradecun] tokens: input={tokens_in}, output={tokens_out}"
+                )
+
         bot_is_fallback = _is_fallback(response_text)
 
         success = await send_text_message(
@@ -302,6 +318,8 @@ async def handle_cootradecun(
             role="assistant",
             message=response_text,
             tenant=tenant.name,
+            tokens_input=tokens_in,
+            tokens_output=tokens_out,
         )
         # ── v3.0: log bot interaction ────────────────────────────────
         if session_id_v3:

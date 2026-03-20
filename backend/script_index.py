@@ -160,13 +160,26 @@ def split_vivienda_by_project(docs) -> tuple[list[dict], list[dict]]:
     return create_parent_child_chunks(pages)
 
 
-def process_and_index(reset: bool = False):
-    """Main indexing function with parent-child chunking."""
+def process_and_index(reset: bool = False, only: str = None):
+    """
+    Main indexing function with parent-child chunking.
+
+    Args:
+        reset: Delete ALL existing data and re-index everything.
+        only:  Re-index a single file by filename (e.g. "credito.pdf").
+               Deletes only that file's chunks before re-indexing.
+    """
     logger.info("=" * 60)
     logger.info("Starting RAG Offline Indexer (v2 — Semantic Chunking)")
     logger.info(f"Database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'configured'}")
     logger.info(f"Docs dir: {DOCS_DIR}")
     logger.info(f"Parent chunks: {PARENT_CHUNK_SIZE} chars | Child chunks: {CHILD_CHUNK_SIZE} chars")
+    if only:
+        logger.info(f"Mode: re-index single file → {only}")
+    elif reset:
+        logger.info("Mode: full reset")
+    else:
+        logger.info("Mode: incremental (skip already indexed)")
     logger.info("=" * 60)
 
     conn = psycopg.connect(DATABASE_URL)
@@ -182,18 +195,34 @@ def process_and_index(reset: bool = False):
     total_children = 0
 
     for filename, title, department in FILES_CONFIG:
+        # Filter to single file if --only was specified
+        if only and filename != only:
+            continue
+
         filepath = os.path.join(DOCS_DIR, filename)
         if not os.path.exists(filepath):
             logger.warning(f"File not found, skipping: {filename}")
             continue
 
-        # Check if already indexed
+        # If re-indexing a single file, delete its existing data first
+        if only:
+            existing = conn.execute(
+                "SELECT id FROM rag_document WHERE file_name = %s",
+                (filename,)
+            ).fetchone()
+            if existing:
+                doc_id = existing[0]
+                conn.execute("DELETE FROM rag_chunk WHERE document_id = %s", (doc_id,))
+                conn.execute("DELETE FROM rag_document WHERE id = %s", (doc_id,))
+                logger.info(f"Deleted existing data for: {filename}")
+
+        # Check if already indexed (skip only in incremental mode)
         result = conn.execute(
             "SELECT id FROM rag_document WHERE file_name = %s AND status = 'indexed'",
             (filename,)
         ).fetchone()
-        if result and not reset:
-            logger.info(f"Already indexed: {filename} — skipping (use --reset to re-index)")
+        if result and not reset and not only:
+            logger.info(f"Already indexed: {filename} — skipping (use --reset or --only {filename})")
             continue
 
         logger.info(f"Processing: {filename} (title: {title})")
@@ -319,4 +348,18 @@ def process_and_index(reset: bool = False):
 
 if __name__ == "__main__":
     reset_mode = "--reset" in sys.argv
-    process_and_index(reset=reset_mode)
+
+    only_file = None
+    if "--only" in sys.argv:
+        idx = sys.argv.index("--only")
+        if idx + 1 < len(sys.argv):
+            only_file = sys.argv[idx + 1]
+        else:
+            logger.error("--only requires a filename argument. Example: --only credito.pdf")
+            sys.exit(1)
+        valid_files = [f for f, _, _ in FILES_CONFIG]
+        if only_file not in valid_files:
+            logger.error(f"Unknown file: '{only_file}'. Valid options:\n  " + "\n  ".join(valid_files))
+            sys.exit(1)
+
+    process_and_index(reset=reset_mode, only=only_file)

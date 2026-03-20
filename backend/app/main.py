@@ -204,14 +204,15 @@ async def whatsapp_webhook_receive(request: Request, background_tasks: Backgroun
     if parsed:
         tenant = get_tenant(parsed["phone_number_id"])
         if tenant:
-            from .cloud_tasks import enqueue_message, INTERNAL_SECRET
+            is_production = os.getenv("ENVIRONMENT", "development") == "production"
 
-            if INTERNAL_SECRET:
-                # Production: delegate to Cloud Tasks
+            if is_production:
+                # Production: delegate to Cloud Tasks (async, with retry)
+                from .cloud_tasks import enqueue_message
                 enqueue_message(parsed, tenant.name)
             else:
-                # Local dev: fallback to background_tasks
-                logger.info("⚠️ INTERNAL_SECRET not set — using background_tasks (local dev)")
+                # Local dev: process directly with background_tasks
+                logger.info("⚙️ Dev mode — using background_tasks (set ENVIRONMENT=production for Cloud Tasks)")
                 background_tasks.add_task(
                     tenant.handler,
                     sender_phone=parsed["sender"],

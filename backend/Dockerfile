@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app/ ./app/
 COPY docs/ ./docs/
+COPY script_index.py .
 
 # Create directory for generated PDFs
 RUN mkdir -p /app/generated_pdfs

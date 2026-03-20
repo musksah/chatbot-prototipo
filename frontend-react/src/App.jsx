@@ -96,11 +96,25 @@ Puedo responder tus preguntas y ayudarte con trámites.<br><br>
     scrollToBottom()
   }, [messages])
 
+  const pollResult = async (taskId, maxAttempts = 30) => {
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, 2000))
+      try {
+        const res = await fetch(`${API_URL}/chat/result/${taskId}`)
+        if (!res.ok) continue
+        const data = await res.json()
+        if (data.status === 'completed' || data.status === 'failed') {
+          return data
+        }
+      } catch (_) {}
+    }
+    return null
+  }
+
   const handleSend = async () => {
     const text = inputValue.trim()
     if (!text || isLoading) return
 
-    // Add user message
     setMessages(prev => [...prev, { type: 'user', content: text }])
     setInputValue('')
     setIsLoading(true)
@@ -108,18 +122,11 @@ Puedo responder tus preguntas y ayudarte con trámites.<br><br>
     try {
       const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          message: text,
-          thread_id: getThreadId()
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, thread_id: getThreadId() })
       })
 
-      if (!response.ok) {
-        throw new Error('Network response was not ok')
-      }
+      if (!response.ok) throw new Error('Network response was not ok')
 
       const data = await response.json()
 
@@ -127,12 +134,20 @@ Puedo responder tus preguntas y ayudarte con trámites.<br><br>
         localStorage.setItem('chat_thread_id', data.thread_id)
       }
 
+      // Async path (production): poll for result
+      if (data.status === 'pending' && data.task_id) {
+        const result = await pollResult(data.task_id)
+        if (result?.messages?.length > 0) {
+          setMessages(prev => [...prev, ...result.messages.map(m => ({ type: 'bot', content: m.content }))])
+        } else {
+          setMessages(prev => [...prev, { type: 'bot', content: 'Lo siento, no obtuve respuesta. Intenta de nuevo.' }])
+        }
+        return
+      }
+
+      // Sync path (dev): response already contains messages
       if (data.messages && data.messages.length > 0) {
-        const newMessages = data.messages.map(msg => ({
-          type: 'bot',
-          content: msg.content
-        }))
-        setMessages(prev => [...prev, ...newMessages])
+        setMessages(prev => [...prev, ...data.messages.map(m => ({ type: 'bot', content: m.content }))])
       }
 
     } catch (error) {

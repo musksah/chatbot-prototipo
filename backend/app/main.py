@@ -115,6 +115,45 @@ register_tenant(TenantConfig(
 ))
 
 
+# ── Chat result storage (PostgreSQL) ─────────────────────────────────
+
+async def _store_chat_result(task_id: str, thread_id: str, status: str, messages: list = None) -> None:
+    from .database import _ensure_engine, async_session_factory
+    from sqlalchemy import text
+    _ensure_engine()
+    if async_session_factory is None:
+        return
+    async with async_session_factory() as session:
+        await session.execute(text("""
+            INSERT INTO chat_results (task_id, thread_id, status, messages, created_at)
+            VALUES (:task_id, :thread_id, :status, :messages, NOW())
+            ON CONFLICT (task_id) DO UPDATE
+              SET status = EXCLUDED.status, messages = EXCLUDED.messages
+        """), {
+            "task_id": task_id,
+            "thread_id": thread_id,
+            "status": status,
+            "messages": __import__("json").dumps(messages) if messages else None,
+        })
+        await session.commit()
+
+
+async def _get_chat_result(task_id: str) -> Optional[Dict]:
+    from .database import _ensure_engine, async_session_factory
+    from sqlalchemy import text
+    _ensure_engine()
+    if async_session_factory is None:
+        return None
+    async with async_session_factory() as session:
+        row = (await session.execute(
+            text("SELECT task_id, thread_id, status, messages FROM chat_results WHERE task_id = :tid"),
+            {"tid": task_id}
+        )).fetchone()
+        if not row:
+            return None
+        return {"task_id": row[0], "thread_id": row[1], "status": row[2], "messages": __import__("json").loads(row[3]) if row[3] else None}
+
+
 # ── Chat endpoint (React frontend — Cootradecun only) ────────────────
 
 class ChatRequest(BaseModel):
@@ -122,16 +161,16 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
-    messages: List[Dict[str, Any]]
+    messages: Optional[List[Dict[str, Any]]] = None
     thread_id: str
+    task_id: Optional[str] = None
+    status: Optional[str] = None  # "pending" | "completed" | "failed"
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
-    thread_id = request.thread_id or str(uuid.uuid4())
+
+def _run_graph(thread_id: str, message: str) -> List[Dict[str, Any]]:
+    """Run LangGraph synchronously and return response messages."""
     config = {"configurable": {"thread_id": thread_id}}
-    inputs = {"messages": [HumanMessage(content=request.message)], "context": {}}
-
-    logger.info(f"📥 New message from thread {thread_id}: '{request.message[:50]}...'")
+    inputs = {"messages": [HumanMessage(content=message)], "context": {}}
 
     current_state = graph_with_memory.get_state(config)
     if current_state and current_state.values:
@@ -141,25 +180,85 @@ async def chat_endpoint(request: ChatRequest):
     else:
         logger.info("📊 No prior state for this thread (new conversation)")
 
+    final_state = graph_with_memory.invoke(inputs, config=config)
+    messages = final_state.get("messages", [])
+    last_message = messages[-1] if messages else None
+
+    if isinstance(last_message, AIMessage):
+        content = last_message.content
+        if isinstance(content, list):
+            content = content[0].get("text", "") if content else ""
+        return [{"role": "assistant", "content": content or "No pude generar una respuesta."}]
+    return [{"role": "assistant", "content": "Lo siento, hubo un error procesando tu solicitud."}]
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(request: ChatRequest):
+    thread_id = request.thread_id or str(uuid.uuid4())
+    is_production = os.getenv("ENVIRONMENT", "development") == "production"
+
+    logger.info(f"📥 New message from thread {thread_id}: '{request.message[:50]}...'")
+
+    if is_production:
+        # Async path: enqueue Cloud Task, return task_id for polling
+        from .cloud_tasks import enqueue_chat
+        task_id = str(uuid.uuid4())
+        await _store_chat_result(task_id, thread_id, "pending")
+        enqueue_chat(task_id, request.message, thread_id)
+        return ChatResponse(task_id=task_id, thread_id=thread_id, status="pending")
+
+    # Dev path: process synchronously
     try:
-        final_state = graph_with_memory.invoke(inputs, config=config)
-        messages = final_state.get("messages", [])
-        last_message = messages[-1] if messages else None
-
-        if isinstance(last_message, AIMessage):
-            content = last_message.content
-            if isinstance(content, list):
-                content = content[0].get("text", "") if content else ""
-            response_messages = [{"role": "assistant", "content": content or "No pude generar una respuesta."}]
-        else:
-            response_messages = [{"role": "assistant", "content": "Lo siento, hubo un error procesando tu solicitud."}]
-
-        return ChatResponse(messages=response_messages, thread_id=thread_id)
-
+        response_messages = _run_graph(thread_id, request.message)
+        return ChatResponse(messages=response_messages, thread_id=thread_id, status="completed")
     except Exception as e:
         import traceback
         logger.error(f"❌ Error in chat_endpoint: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/chat/result/{task_id}", response_model=ChatResponse)
+async def chat_result(task_id: str):
+    """Poll for the result of an async chat task."""
+    result = await _get_chat_result(task_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return ChatResponse(
+        task_id=result["task_id"],
+        thread_id=result["thread_id"],
+        status=result["status"],
+        messages=result["messages"],
+    )
+
+
+# ── Internal endpoint for Cloud Tasks (chat) ─────────────────────────
+
+class ProcessChatRequest(BaseModel):
+    task_id: str
+    message: str
+    thread_id: str
+
+
+@app.post("/internal/process-chat")
+async def internal_process_chat(body: ProcessChatRequest, request: Request):
+    """Called by Cloud Tasks to process a /chat request asynchronously."""
+    from .cloud_tasks import INTERNAL_SECRET
+    secret = request.headers.get("X-Internal-Secret", "")
+    if not INTERNAL_SECRET or secret != INTERNAL_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    logger.info(f"⚙️ Processing chat task: task_id={body.task_id} thread_id={body.thread_id}")
+    try:
+        response_messages = _run_graph(body.thread_id, body.message)
+        await _store_chat_result(body.task_id, body.thread_id, "completed", response_messages)
+        logger.info(f"✅ Chat task completed: task_id={body.task_id}")
+    except Exception as e:
+        logger.error(f"❌ Chat task failed: task_id={body.task_id} error={e}")
+        await _store_chat_result(body.task_id, body.thread_id, "failed",
+                                  [{"role": "assistant", "content": "Lo siento, ocurrió un error. Por favor intenta de nuevo."}])
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"status": "ok"}
 
 
 # ── WhatsApp Webhook ─────────────────────────────────────────────────

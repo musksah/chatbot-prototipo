@@ -28,6 +28,44 @@ CLOUD_RUN_URL = os.getenv(
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 
 
+def enqueue_chat(task_id: str, message: str, thread_id: str) -> bool:
+    """
+    Enqueue a chat request for async processing via Cloud Tasks.
+    Called by the /chat endpoint in production.
+    """
+    try:
+        from google.cloud import tasks_v2
+
+        client = tasks_v2.CloudTasksClient()
+        parent = client.queue_path(PROJECT_ID, LOCATION, QUEUE_NAME)
+
+        payload = {
+            "task_id": task_id,
+            "message": message,
+            "thread_id": thread_id,
+        }
+
+        task = {
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": f"{CLOUD_RUN_URL}/internal/process-chat",
+                "headers": {
+                    "Content-Type": "application/json",
+                    "X-Internal-Secret": INTERNAL_SECRET,
+                },
+                "body": json.dumps(payload).encode(),
+            }
+        }
+
+        client.create_task(request={"parent": parent, "task": task})
+        logger.info(f"📬 Chat task enqueued: task_id={task_id} thread_id={thread_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Failed to enqueue chat Cloud Task: {e}")
+        return False
+
+
 def enqueue_message(parsed: dict, tenant_name: str) -> bool:
     """
     Enqueue a WhatsApp message for async processing via Cloud Tasks.

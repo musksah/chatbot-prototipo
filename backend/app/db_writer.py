@@ -258,3 +258,116 @@ async def close_session(
         logger.error(f"[db_writer] close_session failed (id={session_id}): {e}")
     finally:
         await conn.close()
+
+
+# ─── update_session_stats ────────────────────────────────────────────────────
+
+async def update_session_stats(
+    session_id: str,
+    *,
+    user_messages_delta: int = 0,
+    bot_messages_delta: int = 0,
+    fallback_delta: int = 0,
+    primary_intent: str | None = None,
+    tokens_input_delta: int = 0,
+    tokens_output_delta: int = 0,
+    estimated_cost_delta: float = 0.0,
+) -> None:
+    """
+    Incremental UPDATE of session counters after each conversation turn.
+
+    Called once per bot response in /chat/fake_whatsapp to keep sessions
+    table up-to-date without blocking the chatbot flow.
+
+    - Counters (messages, tokens, fallback) are incremented atomically.
+    - primary_intent is only written when a non-None value is provided.
+    - estimated_cost_usd accumulates across all turns of the session.
+    """
+    conn = await _get_conn()
+    if not conn:
+        return
+    try:
+        session_uuid = uuid.UUID(session_id)
+
+        if primary_intent is not None:
+            await conn.execute("""
+                UPDATE sessions SET
+                    total_messages      = total_messages      + $2,
+                    user_messages       = user_messages       + $3,
+                    bot_messages        = bot_messages        + $4,
+                    fallback_count      = fallback_count      + $5,
+                    primary_intent      = $6,
+                    total_tokens_input  = total_tokens_input  + $7,
+                    total_tokens_output = total_tokens_output + $8,
+                    estimated_cost_usd  = estimated_cost_usd  + $9,
+                    updated_at          = NOW()
+                WHERE id = $1
+            """,
+                session_uuid,
+                user_messages_delta + bot_messages_delta,
+                user_messages_delta,
+                bot_messages_delta,
+                fallback_delta,
+                primary_intent,
+                tokens_input_delta,
+                tokens_output_delta,
+                estimated_cost_delta,
+            )
+        else:
+            await conn.execute("""
+                UPDATE sessions SET
+                    total_messages      = total_messages      + $2,
+                    user_messages       = user_messages       + $3,
+                    bot_messages        = bot_messages        + $4,
+                    fallback_count      = fallback_count      + $5,
+                    total_tokens_input  = total_tokens_input  + $6,
+                    total_tokens_output = total_tokens_output + $7,
+                    estimated_cost_usd  = estimated_cost_usd  + $8,
+                    updated_at          = NOW()
+                WHERE id = $1
+            """,
+                session_uuid,
+                user_messages_delta + bot_messages_delta,
+                user_messages_delta,
+                bot_messages_delta,
+                fallback_delta,
+                tokens_input_delta,
+                tokens_output_delta,
+                estimated_cost_delta,
+            )
+
+        logger.debug(
+            f"[db_writer] update_session_stats OK — session={session_id} "
+            f"user+={user_messages_delta} bot+={bot_messages_delta} "
+            f"fallback+={fallback_delta} intent={primary_intent}"
+        )
+    except Exception as e:
+        logger.error(f"[db_writer] update_session_stats failed (session={session_id}): {e}")
+    finally:
+        await conn.close()
+
+
+# ─── increment_contact_messages ─────────────────────────────────────────────
+
+async def increment_contact_messages(phone: str, count: int = 1) -> None:
+    """
+    Increments total_messages counter for a WhatsApp contact.
+
+    Called after each full turn (user + bot) in /chat/fake_whatsapp.
+    Uses an atomic UPDATE to avoid race conditions.
+    """
+    conn = await _get_conn()
+    if not conn:
+        return
+    try:
+        await conn.execute("""
+            UPDATE whatsapp_contacts
+            SET total_messages = total_messages + $2,
+                updated_at     = NOW()
+            WHERE phone = $1
+        """, phone, count)
+        logger.debug(f"[db_writer] increment_contact_messages OK — phone={phone} +{count}")
+    except Exception as e:
+        logger.error(f"[db_writer] increment_contact_messages failed (phone={phone}): {e}")
+    finally:
+        await conn.close()

@@ -216,6 +216,128 @@ async def chat_endpoint(request: ChatRequest):
         logger.error(f"❌ Error in chat_endpoint: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/chat/fake_whatsapp", response_model=ChatResponse)
+async def chat_endpoint_fake_whatsapp(request: ChatRequest):
+    """
+    Simulates a WhatsApp conversation and writes all metadata to the v3.0 DB schema.
+
+    Fills: whatsapp_contacts, sessions, interaction_log.
+    Counters written per turn: total_messages, user_messages, bot_messages,
+    fallback_count, primary_intent, tokens, estimated_cost_usd.
+    """
+    import time as _time
+    from .db_writer import (
+        upsert_contact,
+        upsert_session,
+        log_interaction,
+        update_session_stats,
+        increment_contact_messages,
+    )
+
+    phone = request.phone or "573000000001"
+    name  = request.name  or "Usuario Test"
+
+    thread_id = request.thread_id or str(uuid.uuid4())
+    config    = {"configurable": {"thread_id": thread_id}}
+    inputs    = {"messages": [HumanMessage(content=request.message)], "context": {}}
+
+    logger.info(f"📥 [fake_wa] thread={thread_id} phone={phone} msg='{request.message[:50]}'")
+
+    # ── 1. Ensure contact exists ──────────────────────────────────────────────
+    contact_id = await upsert_contact(phone, name)
+
+    # ── 2. Get or create session (24 h window) ────────────────────────────────
+    session_id = None
+    if contact_id:
+        session_key = f"fake-{phone}"
+        session_id  = await upsert_session(contact_id, session_key)
+
+    # ── 3. Log the USER turn ──────────────────────────────────────────────────
+    if session_id:
+        await log_interaction(
+            session_id,
+            "user",
+            detected_intent=None,   # intent is detected after bot responds
+            tokens_in=0,
+            tokens_out=0,
+        )
+
+    # ── 4. Invoke agent (measure latency) ────────────────────────────────────
+    t0 = _time.perf_counter()
+    try:
+        final_state = graph_with_memory.invoke(inputs, config=config)
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ [fake_wa] agent error: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    response_ms = int((_time.perf_counter() - t0) * 1000)
+
+    # ── 5. Extract bot response ───────────────────────────────────────────────
+    messages_out = final_state.get("messages", [])
+    last_message = messages_out[-1] if messages_out else None
+
+    if isinstance(last_message, AIMessage):
+        content = last_message.content
+        if isinstance(content, list):
+            content = content[0].get("text", "") if content else ""
+        bot_text = content or "No pude generar una respuesta."
+    else:
+        bot_text = "Lo siento, hubo un error procesando tu solicitud."
+
+    response_messages = [{"role": "assistant", "content": bot_text}]
+
+    # ── 6. Classify the turn ─────────────────────────────────────────────────
+    is_fallback     = _detect_fallback(bot_text)
+    dialog_state    = final_state.get("dialog_state", [])
+    detected_intent = _extract_intent(dialog_state)
+
+    # Token usage from the in‑memory accumulator keyed by thread_id
+    from .agent import _token_totals_by_thread
+    token_totals    = _token_totals_by_thread.get(thread_id, {})
+    tokens_in_turn  = token_totals.get("prompt_tokens", 0)
+    tokens_out_turn = token_totals.get("completion_tokens", 0)
+    cost_delta      = tokens_out_turn * _COST_PER_OUTPUT_TOKEN_USD
+
+    # ── 7. Log the ASSISTANT turn ─────────────────────────────────────────────
+    if session_id:
+        await log_interaction(
+            session_id,
+            "assistant",
+            detected_intent=detected_intent,
+            tokens_in=tokens_in_turn,
+            tokens_out=tokens_out_turn,
+            response_ms=response_ms,
+            is_fallback=is_fallback,
+            fallback_message=request.message if is_fallback else None,
+        )
+
+        # ── 8. Update session counters ────────────────────────────────────────
+        await update_session_stats(
+            session_id,
+            user_messages_delta=1,
+            bot_messages_delta=1,
+            fallback_delta=1 if is_fallback else 0,
+            primary_intent=detected_intent,
+            tokens_input_delta=tokens_in_turn,
+            tokens_output_delta=tokens_out_turn,
+            estimated_cost_delta=cost_delta,
+        )
+
+    # ── 9. Update contact message counter ────────────────────────────────────
+    if contact_id:
+        # 2 messages per turn: 1 user + 1 bot
+        await increment_contact_messages(phone, count=2)
+
+    logger.info(
+        f"✅ [fake_wa] thread={thread_id} session={session_id} "
+        f"intent={detected_intent} fallback={is_fallback} "
+        f"tokens_in={tokens_in_turn} tokens_out={tokens_out_turn} "
+        f"response_ms={response_ms}ms"
+    )
+
+    return ChatResponse(messages=response_messages, thread_id=thread_id)
+
+
 
 @app.get("/chat/result/{task_id}", response_model=ChatResponse)
 async def chat_result(task_id: str):

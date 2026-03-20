@@ -100,7 +100,7 @@ Puedo responder tus preguntas y ayudarte con trámites.<br><br>
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise(r => setTimeout(r, 2000))
       try {
-        const res = await fetch(`${API_URL}/chat/result/${taskId}`)
+        const res = await fetch(`${API_URL}/chat/fake_whatsapp`)
         if (!res.ok) continue
         const data = await res.json()
         if (data.status === 'completed' || data.status === 'failed') {

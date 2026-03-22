@@ -243,9 +243,18 @@ async def handle_cootradecun(
         if isinstance(last_message, AIMessage) and last_message.content:
             content = last_message.content
             if isinstance(content, list):
-                content = content[0].get("text", "") if content else ""
+                # Gemini may return multiple parts; find the text part
+                logger.info(f"📝 [Cootradecun] content is list ({len(content)} parts): {[type(p).__name__ if not isinstance(p, dict) else p.get('type', 'dict') for p in content]}")
+                text_parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        text_parts.append(part)
+                    elif isinstance(part, dict) and part.get("text"):
+                        text_parts.append(part["text"])
+                content = "\n".join(text_parts) if text_parts else ""
             response_text = content or "Lo siento, no pude generar una respuesta."
         else:
+            logger.warning(f"⚠️ [Cootradecun] Unexpected last_message: type={type(last_message).__name__}, content={getattr(last_message, 'content', None)!r}")
             response_text = "Lo siento, hubo un error procesando tu solicitud."
 
         # ── Extract TOTAL token usage from accumulator ────────────────
@@ -255,13 +264,17 @@ async def handle_cootradecun(
         token_totals = _token_totals_by_thread.pop(thread_id, {})
         tokens_in = token_totals.get("prompt_tokens", 0)
         tokens_out = token_totals.get("completion_tokens", 0)
-        if tokens_in or tokens_out:
-            logger.info(
-                f"🔢 [Cootradecun] tokens (full turn): input={tokens_in}, output={tokens_out}, "
-                f"requests={token_totals.get('request_count', '?')}"
-            )
+        logger.info(
+            f"🔢 [Cootradecun] tokens (full turn): input={tokens_in}, output={tokens_out}, "
+            f"requests={token_totals.get('request_count', '?')} "
+            f"(raw_totals={token_totals})"
+        )
 
         bot_is_fallback = _is_fallback(response_text)
+
+        # ── Format for WhatsApp (convert any Markdown remnants) ───────
+        from .whatsapp_formatter import markdown_to_whatsapp
+        response_text = markdown_to_whatsapp(response_text)
 
         success = await send_text_message(
             sender_phone, response_text,
@@ -307,15 +320,34 @@ async def handle_cootradecun(
             logger.info(f"✅ [Cootradecun] Reply sent to ...{sender_phone[-4:]} ({elapsed_ms}ms)")
 
     except Exception as e:
-        logger.error(f"❌ [Cootradecun] Error: {e}")
+        logger.error(f"❌ [Cootradecun] Error: {e}", exc_info=True)
+        fallback_msg = "Lo siento, ocurrió un error. Por favor intenta de nuevo. 🙏"
         try:
             await send_text_message(
-                sender_phone,
-                "Lo siento, ocurrió un error. Por favor intenta de nuevo. 🙏",
+                sender_phone, fallback_msg,
                 tenant.phone_number_id, tenant.access_token,
             )
         except Exception:
             pass
+        # ── Save the exception fallback to the DB ─────────────────
+        if session_id_v4:
+            try:
+                await save_conversation(
+                    session_id=session_id_v4,
+                    role="assistant",
+                    message=fallback_msg,
+                    user_phone=sender_phone,
+                    user_name=sender_name,
+                    tenant=tenant.name,
+                    is_fallback=True,
+                )
+                await update_session_stats(
+                    session_id_v4,
+                    bot_messages_delta=1,
+                    fallback_delta=1,
+                )
+            except Exception as db_err:
+                logger.error(f"❌ [Cootradecun] Failed to save fallback to DB: {db_err}")
 
 
 async def handle_explouse(
@@ -373,6 +405,10 @@ async def handle_explouse(
 
         bot_is_fallback = _is_fallback(response_text)
 
+        # ── Format for WhatsApp (convert any Markdown remnants) ───────
+        from .whatsapp_formatter import markdown_to_whatsapp
+        response_text = markdown_to_whatsapp(response_text)
+
         success = await send_text_message(
             sender_phone, response_text,
             tenant.phone_number_id, tenant.access_token,
@@ -406,12 +442,31 @@ async def handle_explouse(
             logger.info(f"✅ [Explouse] Reply sent to ...{sender_phone[-4:]} ({elapsed_ms}ms)")
 
     except Exception as e:
-        logger.error(f"❌ [Explouse] Error: {e}")
+        logger.error(f"❌ [Explouse] Error: {e}", exc_info=True)
+        fallback_msg = "Lo siento, ocurrió un error. Por favor intenta de nuevo. 🙏"
         try:
             await send_text_message(
-                sender_phone,
-                "Lo siento, ocurrió un error. Por favor intenta de nuevo. 🙏",
+                sender_phone, fallback_msg,
                 tenant.phone_number_id, tenant.access_token,
             )
         except Exception:
             pass
+        # ── Save the exception fallback to the DB ─────────────────
+        if session_id_v4:
+            try:
+                await save_conversation(
+                    session_id=session_id_v4,
+                    role="assistant",
+                    message=fallback_msg,
+                    user_phone=sender_phone,
+                    user_name=sender_name,
+                    tenant=tenant.name,
+                    is_fallback=True,
+                )
+                await update_session_stats(
+                    session_id_v4,
+                    bot_messages_delta=1,
+                    fallback_delta=1,
+                )
+            except Exception as db_err:
+                logger.error(f"❌ [Explouse] Failed to save fallback to DB: {db_err}")

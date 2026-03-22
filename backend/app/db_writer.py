@@ -155,8 +155,8 @@ async def upsert_session(contact_id: str, session_key: str) -> str | None:
             # 3. Create a new session with a unique key (prefix + short UUID suffix)
             unique_key = f"{session_key}-{uuid.uuid4().hex[:8]}"
             row = await conn.fetchrow("""
-                INSERT INTO sessions (session_key, contact_id, status, started_at)
-                VALUES ($1, $2, 'active', NOW())
+                INSERT INTO sessions (session_key, contact_id, status, started_at, wa_conversation_type)
+                VALUES ($1, $2, 'active', NOW(), 'service')
                 RETURNING id::TEXT
             """, unique_key, contact_uuid)
 

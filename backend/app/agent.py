@@ -14,28 +14,43 @@ _token_totals_by_thread = {}
 
 def _extract_token_usage(result) -> dict:
     """Extract token usage from Gemini response, handling different metadata formats."""
-    # Try usage_metadata directly
-    if getattr(result, "usage_metadata", None):
-        meta = result.usage_metadata
-        if isinstance(meta, dict):
-            return meta
-        # Handle object-style metadata
+    # Diagnostic logging to reveal the actual metadata structure
+    raw_usage = getattr(result, "usage_metadata", None)
+    raw_response = getattr(result, "response_metadata", None)
+    if raw_usage is not None:
+        if isinstance(raw_usage, dict):
+            logger.debug("🔢 [TOKEN_DEBUG] usage_metadata (dict): %s", raw_usage)
+        else:
+            attrs = {k: getattr(raw_usage, k, None) for k in dir(raw_usage) if not k.startswith("_")}
+            logger.debug("🔢 [TOKEN_DEBUG] usage_metadata (obj %s): %s", type(raw_usage).__name__, attrs)
+    else:
+        logger.debug("🔢 [TOKEN_DEBUG] No usage_metadata. response_metadata=%s", raw_response)
+
+    # Helper to extract from a dict trying all known key variants
+    def _from_dict(d: dict) -> dict:
         return {
-            "prompt_tokens": getattr(meta, "prompt_token_count", None) or getattr(meta, "input_tokens", None),
-            "completion_tokens": getattr(meta, "candidates_token_count", None) or getattr(meta, "output_tokens", None),
-            "total_tokens": getattr(meta, "total_token_count", None),
+            "prompt_tokens": d.get("prompt_tokens") or d.get("input_tokens") or d.get("prompt_token_count"),
+            "completion_tokens": d.get("completion_tokens") or d.get("output_tokens") or d.get("candidates_token_count"),
+            "total_tokens": d.get("total_tokens") or d.get("total_token_count"),
         }
-    
+
+    # Try usage_metadata directly
+    if raw_usage is not None:
+        if isinstance(raw_usage, dict):
+            return _from_dict(raw_usage)
+        # Handle object-style metadata (try all known attribute names)
+        return {
+            "prompt_tokens": getattr(raw_usage, "prompt_token_count", None) or getattr(raw_usage, "prompt_tokens", None) or getattr(raw_usage, "input_tokens", None),
+            "completion_tokens": getattr(raw_usage, "candidates_token_count", None) or getattr(raw_usage, "completion_tokens", None) or getattr(raw_usage, "output_tokens", None),
+            "total_tokens": getattr(raw_usage, "total_token_count", None) or getattr(raw_usage, "total_tokens", None),
+        }
+
     # Fallback to response_metadata
-    response_metadata = getattr(result, "response_metadata", None) or {}
+    response_metadata = raw_response or {}
     usage = response_metadata.get("usage_metadata") or response_metadata.get("usage") or response_metadata.get("token_usage") or {}
-    
+
     # Normalize field names
-    return {
-        "prompt_tokens": usage.get("prompt_token_count") or usage.get("prompt_tokens") or usage.get("input_tokens"),
-        "completion_tokens": usage.get("candidates_token_count") or usage.get("completion_tokens") or usage.get("output_tokens"),
-        "total_tokens": usage.get("total_token_count") or usage.get("total_tokens"),
-    }
+    return _from_dict(usage)
 
 def _update_and_log_token_usage(thread_id: str, usage: dict) -> None:
     if not usage:
@@ -244,6 +259,18 @@ def pop_dialog_state(state: State) -> dict:
 
 # --- Prompts & Runnables ---
 
+# Shared WhatsApp formatting instruction appended to every agent prompt
+WHATSAPP_FORMAT_RULE = (
+    "\n*REGLA DE FORMATO WhatsApp* (OBLIGATORIA):\n"
+    "- Este chat se envía por WhatsApp. Usa formato WhatsApp, NO Markdown.\n"
+    "- Negritas: *texto* (UN solo asterisco). NUNCA uses **doble asterisco**.\n"
+    "- Cursiva: _texto_ (guion bajo).\n"
+    "- NO uses ## encabezados, [links](url), --- ni ```código```.\n"
+    "- Usa • o - para listas.\n"
+    "- Mantén respuestas cortas y directas (máx 3-4 puntos clave).\n"
+)
+
+
 # Support both GEMINI_API_KEY (project convention) and GOOGLE_API_KEY (langchain default)
 _GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
@@ -274,11 +301,11 @@ primary_prompt = ChatPromptTemplate.from_messages(
             "Actúa como el Asistente Virtual principal de COOTRADECUN. "
             "Puedes responder directamente O derivar a un sub-agente especializado según la necesidad.\n\n"
             
-            "**REGLA CRÍTICA - RESPONDER DIRECTAMENTE:**\n"
+            "*REGLA CRÍTICA - RESPONDER DIRECTAMENTE:*\n"
             "Para saludos (hola, buenos días, gracias, etc.) o preguntas generales sobre COOTRADECUN, "
             "RESPONDE TÚ DIRECTAMENTE de forma amable. NO delegues a ningún agente.\n\n"
             
-            "**REGLAS DE ENRUTAMIENTO (solo cuando hay intención específica):**\n"
+            "*REGLAS DE ENRUTAMIENTO (solo cuando hay intención específica):*\n"
             "- VIVIENDA (proyectos, precios, Pedregal, Rancho Grande) → ToVivienda\n"
             "- NÓMINAS (desprendibles, pagos, libranzas) → ToNominas\n"
             "- ASOCIACIÓN (requisitos, auxilios, beneficios) → ToAtencionAsociado\n"
@@ -291,10 +318,11 @@ primary_prompt = ChatPromptTemplate.from_messages(
             # "- CERTIFICADOS (tributario, aportes, paz y salvo, OTP) → ToCertificados\n"
             "\n"
             
-            "**IMPORTANTE:**\n"
+            "*IMPORTANTE:*\n"
             "- Si la pregunta es ambigua, HAZ PREGUNTAS DE SEGUIMIENTO en lugar de asumir.\n"
             "- Si el tema no es de COOTRADECUN, responde: 'Lo siento, solo puedo ayudarte con temas de COOTRADECUN.'\n\n"
             
+            + WHATSAPP_FORMAT_RULE +
             "Current time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -310,8 +338,8 @@ asociado_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Eres el experto en Atención al Asociado de COOTRADECUN.\n\n"
-            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
-            "1. SIEMPRE debes usar la herramienta `consultar_atencion_asociado` ANTES de responder CUALQUIER pregunta.\n"
+            "*REGLA CRÍTICA - OBLIGATORIA*:\n"
+            "1. SIEMPRE debes usar la herramienta consultar_atencion_asociado ANTES de responder CUALQUIER pregunta.\n"
             "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
             "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
             "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n\n"
@@ -319,17 +347,15 @@ asociado_prompt = ChatPromptTemplate.from_messages(
             "- Requisitos de asociación y documentos necesarios.\n"
             "- Auxilios: solidaridad, discapacidad, incapacidad, estudios.\n"
             "- Convenios: parques, educación, salud, exequiales.\n\n"
-            "**REGLA DE ESCALACIÓN** (OBLIGATORIA):\n"
+            "*REGLA DE ESCALACIÓN* (OBLIGATORIA):\n"
             "Si el usuario pregunta sobre CUALQUIERA de estos temas, debes usar CompleteOrEscalate INMEDIATAMENTE:\n"
             "- CERTIFICADOS (tributario, aportes, paz y salvo, OTP) → ESCALAR\n"
             "- VIVIENDA (proyectos, Pedregal, hipotecas) → ESCALAR\n"
             "- NÓMINAS (desprendibles, pagos, libranzas) → ESCALAR\n"
             "- CARTERA (créditos, préstamos, saldos) → ESCALAR\n"
             "NO intentes responder sobre estos temas, ESCALA inmediatamente.\n\n"
-            "**REGLA DE FORMATO** (IMPORTANTE):\n"
-            "- Responde de forma CONCISA: máximo 3-4 puntos clave.\n"
-            "- Usa bullet points o listas, NO párrafos largos.\n"
-            "- Al final ofrece: '¿Quieres que te explique alguno con más detalle?'\n"
+            + WHATSAPP_FORMAT_RULE +
+            "Al final ofrece: '¿Quieres que te explique alguno con más detalle?'\n"
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -345,8 +371,8 @@ nominas_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Eres el experto en Nóminas y Tesorería de COOTRADECUN.\n\n"
-            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
-            "1. SIEMPRE debes usar la herramienta `consultar_nominas` ANTES de responder CUALQUIER pregunta.\n"
+            "*REGLA CRÍTICA - OBLIGATORIA*:\n"
+            "1. SIEMPRE debes usar la herramienta consultar_nominas ANTES de responder CUALQUIER pregunta.\n"
             "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
             "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
             "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n\n"
@@ -355,9 +381,9 @@ nominas_prompt = ChatPromptTemplate.from_messages(
             "- Medios de pago: PSE, Baloto (código 3898), Banco de Bogotá.\n"
             "- Libranzas y deducciones.\n\n"
             "Para saldos específicos, recuerda que el usuario debe ingresar al Portal Transaccional.\n"
-            "**REGLA DE ESCALACIÓN**: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
+            "*REGLA DE ESCALACIÓN*: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
             "VIVIENDA, ASOCIACIÓN, CONVENIOS o CARTERA → usa CompleteOrEscalate INMEDIATAMENTE.\n\n"
-            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            + WHATSAPP_FORMAT_RULE +
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -373,8 +399,8 @@ vivienda_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Eres el asesor experto en Vivienda de COOTRADECUN. Tu objetivo es ayudar a los asociados a cumplir el sueño de tener vivienda propia.\n\n"
-            "**REGLA CRÍTICA - OBLIGATORIA**: \n"
-            "1. SIEMPRE debes usar la herramienta `consultar_vivienda` ANTES de responder CUALQUIER pregunta.\n"
+            "*REGLA CRÍTICA - OBLIGATORIA*:\n"
+            "1. SIEMPRE debes usar la herramienta consultar_vivienda ANTES de responder CUALQUIER pregunta.\n"
             "2. Incluso para preguntas cortas de seguimiento como '¿Cuál es el precio?' o '¿Dónde queda?', DEBES usar la herramienta.\n"
             "3. Si el usuario preguntó previamente sobre un proyecto específico (ej: Pedregal), usa ese contexto en tu query a la herramienta.\n"
             "4. NUNCA digas 'no tengo información' o 'contacta al equipo' sin PRIMERO haber consultado la herramienta.\n\n"
@@ -385,9 +411,9 @@ vivienda_prompt = ChatPromptTemplate.from_messages(
             "- Proyectos: 'Rancho Grande' (Melgar), 'El Pedregal' (Fusagasugá) y 'Arayanes de Peñalisa'.\n"
             "- Crédito: Montos, plazos y tasas preferenciales.\n"
             "- Simulación: Simulador de crédito en la web.\n\n"
-            "**REGLA DE ESCALACIÓN**: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
+            "*REGLA DE ESCALACIÓN*: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
             "NÓMINAS, ASOCIACIÓN, CONVENIOS o CARTERA → usa CompleteOrEscalate INMEDIATAMENTE.\n\n"
-            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            + WHATSAPP_FORMAT_RULE +
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -403,8 +429,8 @@ convenios_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Eres el experto en Convenios y Alianzas de COOTRADECUN.\n\n"
-            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
-            "1. SIEMPRE debes usar la herramienta `consultar_convenios` ANTES de responder CUALQUIER pregunta.\n"
+            "*REGLA CRÍTICA - OBLIGATORIA*:\n"
+            "1. SIEMPRE debes usar la herramienta consultar_convenios ANTES de responder CUALQUIER pregunta.\n"
             "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
             "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
             "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n"
@@ -415,9 +441,9 @@ convenios_prompt = ChatPromptTemplate.from_messages(
             "- Descuentos y beneficios para asociados.\n"
             "- Servicios de salud, educación, recreación, exequiales.\n"
             "- Condiciones y requisitos de los convenios.\n\n"
-            "**REGLA DE ESCALACIÓN**: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
+            "*REGLA DE ESCALACIÓN*: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
             "VIVIENDA, NÓMINAS, ASOCIACIÓN o CARTERA → usa CompleteOrEscalate INMEDIATAMENTE.\n\n"
-            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            + WHATSAPP_FORMAT_RULE +
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -433,8 +459,8 @@ cartera_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Eres el experto en Cartera y Créditos de COOTRADECUN.\n\n"
-            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
-            "1. SIEMPRE debes usar la herramienta `consultar_cartera` ANTES de responder CUALQUIER pregunta.\n"
+            "*REGLA CRÍTICA - OBLIGATORIA*:\n"
+            "1. SIEMPRE debes usar la herramienta consultar_cartera ANTES de responder CUALQUIER pregunta.\n"
             "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
             "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
             "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n"
@@ -447,9 +473,9 @@ cartera_prompt = ChatPromptTemplate.from_messages(
             "- Tasas de interés y plazos.\n"
             "- Requisitos para solicitar créditos.\n\n"
             "Para información específica de saldos del usuario, recuerda que debe consultar el Portal Transaccional.\n"
-            "**REGLA DE ESCALACIÓN**: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
+            "*REGLA DE ESCALACIÓN*: Si el usuario pregunta sobre CERTIFICADOS (tributario, aportes, paz y salvo), "
             "VIVIENDA, NÓMINAS, ASOCIACIÓN o CONVENIOS → usa CompleteOrEscalate INMEDIATAMENTE.\n\n"
-            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            + WHATSAPP_FORMAT_RULE +
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -465,8 +491,8 @@ contabilidad_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Eres el experto en Contabilidad de COOTRADECUN.\n\n"
-            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
-            "1. SIEMPRE debes usar la herramienta `consultar_contabilidad` ANTES de responder CUALQUIER pregunta.\n"
+            "*REGLA CRÍTICA - OBLIGATORIA*:\n"
+            "1. SIEMPRE debes usar la herramienta consultar_contabilidad ANTES de responder CUALQUIER pregunta.\n"
             "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
             "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
             "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n\n"
@@ -476,11 +502,11 @@ contabilidad_prompt = ChatPromptTemplate.from_messages(
             "- Retenciones según normatividad vigente.\n"
             "- Certificados de retención y plazos de entrega.\n"
             "- Requisitos documentales para proveedores (RUT, Cámara de Comercio, etc.).\n\n"
-            "**REGLA DE ESCALACIÓN** (OBLIGATORIA):\n"
+            "*REGLA DE ESCALACIÓN* (OBLIGATORIA):\n"
             "Si el usuario pregunta sobre temas NO relacionados con contabilidad, usa CompleteOrEscalate:\n"
             "- CERTIFICADOS (tributario personales, OTP) → ESCALAR\n"
             "- VIVIENDA, NÓMINAS, ASOCIACIÓN, CONVENIOS, CARTERA, TESORERÍA → ESCALAR\n\n"
-            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            + WHATSAPP_FORMAT_RULE +
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -496,8 +522,8 @@ tesoreria_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Eres el experto en Tesorería de COOTRADECUN.\n\n"
-            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
-            "1. SIEMPRE debes usar la herramienta `consultar_tesoreria` ANTES de responder CUALQUIER pregunta.\n"
+            "*REGLA CRÍTICA - OBLIGATORIA*:\n"
+            "1. SIEMPRE debes usar la herramienta consultar_tesoreria ANTES de responder CUALQUIER pregunta.\n"
             "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
             "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
             "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n\n"
@@ -507,11 +533,11 @@ tesoreria_prompt = ChatPromptTemplate.from_messages(
             "- Oficinas con servicio de caja presencial.\n"
             "- Tiempos de desembolso (créditos, auxilios, devoluciones, retiros).\n"
             "- Convenios de recaudo (Efecty, Éxito, Gana Gana, etc.).\n\n"
-            "**REGLA DE ESCALACIÓN** (OBLIGATORIA):\n"
+            "*REGLA DE ESCALACIÓN* (OBLIGATORIA):\n"
             "Si el usuario pregunta sobre temas NO relacionados con tesorería, usa CompleteOrEscalate:\n"
             "- CERTIFICADOS (tributario, OTP) → ESCALAR\n"
             "- VIVIENDA, NÓMINAS, ASOCIACIÓN, CONVENIOS, CARTERA, CONTABILIDAD → ESCALAR\n\n"
-            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            + WHATSAPP_FORMAT_RULE +
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),
@@ -527,8 +553,8 @@ credito_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Eres el experto en Créditos de COOTRADECUN.\n\n"
-            "**REGLA CRÍTICA - OBLIGATORIA**:\n"
-            "1. SIEMPRE debes usar la herramienta `consultar_credito` ANTES de responder CUALQUIER pregunta.\n"
+            "*REGLA CRÍTICA - OBLIGATORIA*:\n"
+            "1. SIEMPRE debes usar la herramienta consultar_credito ANTES de responder CUALQUIER pregunta.\n"
             "2. Incluso para preguntas de seguimiento, DEBES consultar la herramienta.\n"
             "3. NUNCA respondas de memoria o con información que no provenga de la herramienta.\n"
             "4. NUNCA digas 'no tengo información' sin PRIMERO haber consultado la herramienta.\n\n"
@@ -537,11 +563,11 @@ credito_prompt = ChatPromptTemplate.from_messages(
             "- Requisitos generales: asociado activo, al día, verificación en centrales de riesgo.\n"
             "- Documentación requerida: desprendible, documento de identidad, soportes de ingresos.\n"
             "- Simulación de crédito.\n\n"
-            "**REGLA DE ESCALACIÓN** (OBLIGATORIA):\n"
+            "*REGLA DE ESCALACIÓN* (OBLIGATORIA):\n"
             "Si el usuario pregunta sobre temas NO relacionados con créditos, usa CompleteOrEscalate:\n"
             "- CERTIFICADOS (tributario, OTP) → ESCALAR\n"
             "- VIVIENDA, NÓMINAS, ASOCIACIÓN, CONVENIOS, CARTERA, CONTABILIDAD, TESORERÍA → ESCALAR\n\n"
-            "**REGLA DE FORMATO**: Responde CONCISO (máx 3-4 puntos). Ofrece expandir detalles si lo necesita.\n"
+            + WHATSAPP_FORMAT_RULE +
             "\nCurrent time: {time}."
         ),
         ("placeholder", "{messages}"),

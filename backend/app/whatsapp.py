@@ -246,7 +246,7 @@ async def handle_cootradecun(
 
     thread_id = f"wa-{sender_phone}"
     config = {"configurable": {"thread_id": thread_id}}
-    inputs = {"messages": [HumanMessage(content=text)], "context": {}}
+    inputs = {"messages": [HumanMessage(content=text)]}
 
     logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     logger.info(f"📨 Nuevo mensaje → Cootradecun")

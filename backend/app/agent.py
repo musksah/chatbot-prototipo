@@ -599,12 +599,16 @@ def summarization_node_with_logging(state: State):
     messages_before = len(state.get("messages", []))
     context_before = state.get("context", {})
     has_summary = bool(context_before.get("summary"))
-    
+
     # Estimate tokens before
     tokens_before = count_tokens_approximately(state.get("messages", []))
-    
+
+    # Skip summarization entirely when well below threshold (max_tokens_before_summary=3000)
+    if tokens_before < 2000 and not has_summary:
+        return {}
+
     logger.info(f"🧠 [SUMMARIZATION] BEFORE: messages={messages_before}, tokens≈{tokens_before}, has_prior_summary={has_summary}")
-    
+
     # Call the actual summarization node
     result = _summarization_node_internal.invoke(state)
     
@@ -634,32 +638,11 @@ builder.add_node("summarize", summarization_node_with_logging)
 # Primary Assistant Node
 builder.add_node("primary_assistant", Assistant(primary_runnable, name="Primary Assistant"))
 
-def route_from_start(state: State):
-    # Resume the last dialog if it exists; otherwise go to primary assistant.
-    # When resuming, go directly to the agent node (not entry node) because
-    # entry nodes expect a tool_call_id from the previous message.
-    stack = state.get("dialog_state") or []
-    if stack:
-        last = stack[-1]
-        # Go directly to the agent, not the entry node
-        if last == "certificados":
-            return "certificados"
-        if last == "atencion_asociado":
-            return "atencion_asociado"
-        if last == "nominas":
-            return "nominas"
-        if last == "vivienda":
-            return "vivienda"
-        if last == "convenios":
-            return "convenios"
-        if last == "cartera":
-            return "cartera"
-        if last == "contabilidad":
-            return "contabilidad"
-        if last == "tesoreria":
-            return "tesoreria"
-        if last == "credito":
-            return "credito"
+def route_from_start(_state: State):
+    # Each WhatsApp message is a complete invocation — always start from
+    # primary_assistant so it can decide the correct sub-agent based on the
+    # new message. Resuming the last sub-agent caused an extra unnecessary
+    # LLM call when the user switched topics between turns.
     return "primary_assistant"
 
 # START -> summarize first, then route to appropriate agent

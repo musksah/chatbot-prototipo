@@ -36,7 +36,7 @@ HYBRID_K_VECTOR = 8        # Candidates from vector search
 HYBRID_K_FTS = 8           # Candidates from full-text search
 MIN_SIMILARITY = 0.25      # Minimum cosine similarity threshold
 RERANK_CANDIDATES = 8      # Chunks sent to re-ranker
-ENABLE_RERANK = True       # Toggle re-ranking (disable for lower latency)
+ENABLE_RERANK = False      # Toggle re-ranking (disable for lower latency)
 ENABLE_PARENT_EXPANSION = True  # Toggle parent chunk expansion
 
 # Department → document title mapping
@@ -253,8 +253,7 @@ def _format_output(chunks: list[dict], department: str) -> str:
     for chunk in chunks:
         page = chunk.get("page_number")
         vec = chunk.get("vec_score", 0)
-        fts = chunk.get("fts_score", 0)
-        
+
         header_parts = [f"Fuente: {DEPT_TO_TITLE.get(department, department)}"]
         if page is not None:
             header_parts.append(f"Pág. {page + 1}")

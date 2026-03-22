@@ -169,6 +169,8 @@ class ChatResponse(BaseModel):
 
 def _run_graph(thread_id: str, message: str) -> List[Dict[str, Any]]:
     """Run LangGraph synchronously and return response messages."""
+    from .debug import stream_graph_with_debug
+
     config = {"configurable": {"thread_id": thread_id}}
     inputs = {"messages": [HumanMessage(content=message)], "context": {}}
 
@@ -180,7 +182,7 @@ def _run_graph(thread_id: str, message: str) -> List[Dict[str, Any]]:
     else:
         logger.info("📊 No prior state for this thread (new conversation)")
 
-    final_state = graph_with_memory.invoke(inputs, config=config)
+    final_state = stream_graph_with_debug(graph_with_memory, inputs, config)
     messages = final_state.get("messages", [])
     last_message = messages[-1] if messages else None
 
@@ -263,9 +265,11 @@ async def chat_endpoint_fake_whatsapp(request: ChatRequest):
         )
 
     # ── 4. Invoke agent (measure latency) ────────────────────────────────────
+    from .debug import stream_graph_with_debug
+
     t0 = _time.perf_counter()
     try:
-        final_state = graph_with_memory.invoke(inputs, config=config)
+        final_state = stream_graph_with_debug(graph_with_memory, inputs, config)
     except Exception as e:
         import traceback
         logger.error(f"❌ [fake_wa] agent error: {e}\n{traceback.format_exc()}")

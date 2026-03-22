@@ -231,8 +231,10 @@ async def handle_cootradecun(
             )
 
         # ── Invoke the agent and measure latency ─────────────────────
+        from .debug import stream_graph_with_debug
+
         t_start = time.monotonic()
-        final_state = graph_with_memory.invoke(inputs, config=config)
+        final_state = stream_graph_with_debug(graph_with_memory, inputs, config)
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
         messages = final_state.get("messages", [])

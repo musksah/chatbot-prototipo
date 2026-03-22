@@ -219,9 +219,9 @@ async def chat_endpoint(request: ChatRequest):
 @app.post("/chat/fake_whatsapp", response_model=ChatResponse)
 async def chat_endpoint_fake_whatsapp(request: ChatRequest):
     """
-    Simulates a WhatsApp conversation and writes all metadata to the v3.0 DB schema.
+    Simulates a WhatsApp conversation and writes all metadata to the v4.0 DB schema.
 
-    Fills: whatsapp_contacts, sessions, interaction_log.
+    Fills: whatsapp_contacts, sessions, conversations.
     Counters written per turn: total_messages, user_messages, bot_messages,
     fallback_count, primary_intent, tokens, estimated_cost_usd.
     """
@@ -229,7 +229,7 @@ async def chat_endpoint_fake_whatsapp(request: ChatRequest):
     from .db_writer import (
         upsert_contact,
         upsert_session,
-        log_interaction,
+        save_conversation,
         update_session_stats,
         increment_contact_messages,
     )
@@ -252,14 +252,14 @@ async def chat_endpoint_fake_whatsapp(request: ChatRequest):
         session_key = f"fake-{phone}"
         session_id  = await upsert_session(contact_id, session_key)
 
-    # ── 3. Log the USER turn ──────────────────────────────────────────────────
+    # ── 3. Save the USER message ──────────────────────────────────────────────
     if session_id:
-        await log_interaction(
+        await save_conversation(
             session_id,
             "user",
-            detected_intent=None,   # intent is detected after bot responds
-            tokens_in=0,
-            tokens_out=0,
+            request.message,
+            user_phone=phone,
+            user_name=name,
         )
 
     # ── 4. Invoke agent (measure latency) ────────────────────────────────────
@@ -298,17 +298,19 @@ async def chat_endpoint_fake_whatsapp(request: ChatRequest):
     tokens_out_turn = token_totals.get("completion_tokens", 0)
     cost_delta      = tokens_out_turn * _COST_PER_OUTPUT_TOKEN_USD
 
-    # ── 7. Log the ASSISTANT turn ─────────────────────────────────────────────
+    # ── 7. Save the ASSISTANT response ────────────────────────────────────────
     if session_id:
-        await log_interaction(
+        await save_conversation(
             session_id,
             "assistant",
+            bot_text,
+            user_phone=phone,
+            user_name=name,
             detected_intent=detected_intent,
+            is_fallback=is_fallback,
+            response_time_ms=response_ms,
             tokens_in=tokens_in_turn,
             tokens_out=tokens_out_turn,
-            response_ms=response_ms,
-            is_fallback=is_fallback,
-            fallback_message=request.message if is_fallback else None,
         )
 
         # ── 8. Update session counters ────────────────────────────────────────

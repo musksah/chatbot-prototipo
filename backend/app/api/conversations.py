@@ -2,6 +2,7 @@
 Cootradecun Chatbot API - Conversations/Messages Routes
 
 Endpoints for viewing WhatsApp message sessions and individual messages.
+Reads from the unified `conversations` table (v4.0 schema).
 """
 from datetime import date
 from typing import Annotated, Optional
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, and_
 from app.database import get_db
-from app.models.chatbot import Conversation
+from app.models.conversation import Conversation
 from app.schemas.conversations import (
     SessionResponse,
     SessionListResponse,
@@ -97,7 +98,7 @@ async def list_sessions(
         
         sessions.append(
             SessionResponse(
-                session_id=row.session_id,
+                session_id=str(row.session_id),
                 user_phone=row.user_phone,
                 user_name=row.user_name,
                 message_count=row.message_count,
@@ -125,9 +126,18 @@ async def get_session_messages(
     """
     Get all messages for a specific session, ordered chronologically.
     """
+    from uuid import UUID
+    try:
+        session_uuid = UUID(session_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid session ID format",
+        )
+
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.session_id == session_id)
+        .where(Conversation.session_id == session_uuid)
         .order_by(Conversation.created_at.asc())
     )
     messages = result.scalars().all()

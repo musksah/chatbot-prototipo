@@ -172,54 +172,6 @@ async def mark_as_read(
             pass
 
 
-# ── Save message to DB ───────────────────────────────────────────────
-
-async def save_message(
-    session_id: str,
-    user_phone: str,
-    user_name: str,
-    role: str,
-    message: str,
-    wa_message_id: str = None,
-    department: str = None,
-    tenant: str = None,
-    tokens_input: int = None,
-    tokens_output: int = None,
-) -> None:
-    """Save a message to the conversations table."""
-    try:
-        import uuid
-        from .database import _ensure_engine, async_session_factory
-        from .models.chatbot import Conversation
-        from datetime import datetime
-
-        _ensure_engine()
-        if async_session_factory is None:
-            logger.warning("⚠️ Database not configured, skipping message save")
-            return
-
-        async with async_session_factory() as session:
-            conv = Conversation(
-                id=str(uuid.uuid4()),
-                session_id=session_id,
-                user_phone=user_phone,
-                user_name=user_name,
-                role=role,
-                message=message,
-                wa_message_id=wa_message_id,
-                department=department,
-                tenant=tenant,
-                tokens_input=tokens_input,
-                tokens_output=tokens_output,
-                message_type="text",
-                created_at=datetime.utcnow(),
-            )
-            session.add(conv)
-            await session.commit()
-    except Exception as e:
-        logger.error(f"⚠️ Failed to save message to DB: {e}")
-
-
 # ── Tenant handlers ───────────────────────────────────────────────────
 # These are imported and registered in main.py so they can reference
 # the compiled graph (Cootradecun) or the simple LLM (Explouse).
@@ -236,13 +188,18 @@ async def handle_cootradecun(
     Process a Cootradecun message through the LangGraph multi-agent system.
     graph_with_memory is injected via functools.partial in main.py.
 
-    Dual-write: writes to the legacy `conversations` table AND to the v3.0 schema
-    (whatsapp_contacts, sessions, interaction_log). Both writes are independent.
+    Single-write to the unified `conversations` table (v4.0 schema).
+    Also updates contacts and session stats.
 
     Sessions span 24 hours — close_session is NOT called here anymore.
     The session stays active until upsert_session detects a 24h gap on the next message.
     """
-    from .db_writer import upsert_contact, upsert_session, log_interaction
+    from .db_writer import (
+        upsert_contact, upsert_session, save_conversation,
+        update_session_stats, increment_contact_messages,
+    )
+
+    _COST_PER_OUTPUT_TOKEN = 0.0000025  # Gemini Flash pricing
 
     thread_id = f"wa-{sender_phone}"
     config = {"configurable": {"thread_id": thread_id}}
@@ -254,26 +211,24 @@ async def handle_cootradecun(
     logger.info(f"   Mensaje: {text[:120]}")
     logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    # ── v3.0: register contact and session BEFORE processing ─────────
+    # ── v4.0: register contact and session BEFORE processing ─────────
     contact_id = await upsert_contact(sender_phone, sender_name)
-    session_id_v3 = await upsert_session(contact_id, thread_id) if contact_id else None
+    session_id_v4 = await upsert_session(contact_id, thread_id) if contact_id else None
 
     try:
         await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)
 
-        # ── Legacy: save user message ────────────────────────────────
-        await save_message(
-            session_id=thread_id,
-            user_phone=sender_phone,
-            user_name=sender_name,
-            role="user",
-            message=text,
-            wa_message_id=message_id,
-            tenant=tenant.name,
-        )
-        # ── v3.0: log user interaction ───────────────────────────────
-        if session_id_v3:
-            await log_interaction(session_id_v3, "user")
+        # ── Save user message ────────────────────────────────────────
+        if session_id_v4:
+            await save_conversation(
+                session_id=session_id_v4,
+                role="user",
+                message=text,
+                user_phone=sender_phone,
+                user_name=sender_name,
+                wa_message_id=message_id,
+                tenant=tenant.name,
+            )
 
         # ── Invoke the agent and measure latency ─────────────────────
         t_start = time.monotonic()
@@ -310,25 +265,40 @@ async def handle_cootradecun(
             tenant.phone_number_id, tenant.access_token,
         )
 
-        # ── Legacy: save bot response ────────────────────────────────
-        await save_message(
-            session_id=thread_id,
-            user_phone=sender_phone,
-            user_name=sender_name,
-            role="assistant",
-            message=response_text,
-            tenant=tenant.name,
-            tokens_input=tokens_in,
-            tokens_output=tokens_out,
-        )
-        # ── v3.0: log bot interaction ────────────────────────────────
-        if session_id_v3:
-            await log_interaction(
-                session_id_v3, "assistant",
-                response_ms=elapsed_ms,
+        # ── Extract intent from dialog_state ─────────────────────────
+        dialog_state = final_state.get("dialog_state", [])
+        detected_intent = dialog_state[-1] if dialog_state else None
+
+        # ── Save bot response ────────────────────────────────────────
+        if session_id_v4:
+            await save_conversation(
+                session_id=session_id_v4,
+                role="assistant",
+                message=response_text,
+                user_phone=sender_phone,
+                user_name=sender_name,
+                tenant=tenant.name,
+                detected_intent=detected_intent,
                 is_fallback=bot_is_fallback,
-                fallback_message=response_text if bot_is_fallback else None,
+                response_time_ms=elapsed_ms,
+                tokens_in=tokens_in or 0,
+                tokens_out=tokens_out or 0,
             )
+
+            # ── Update session counters ───────────────────────────────
+            await update_session_stats(
+                session_id_v4,
+                user_messages_delta=1,
+                bot_messages_delta=1,
+                fallback_delta=1 if bot_is_fallback else 0,
+                primary_intent=detected_intent,
+                tokens_input_delta=tokens_in or 0,
+                tokens_output_delta=tokens_out or 0,
+                estimated_cost_delta=(tokens_out or 0) * _COST_PER_OUTPUT_TOKEN,
+            )
+
+        # ── Update contact message counter ────────────────────────────
+        await increment_contact_messages(sender_phone, count=2)
 
         if success:
             logger.info(f"✅ [Cootradecun] Reply sent to ...{sender_phone[-4:]} ({elapsed_ms}ms)")
@@ -355,13 +325,16 @@ async def handle_explouse(
     """
     Process an Explouse message through the simple direct LLM bot.
 
-    Dual-write: writes to the legacy `conversations` table AND to the v3.0 schema.
+    Single-write to the unified `conversations` table (v4.0 schema).
 
     Sessions span 24 hours — close_session is NOT called here anymore.
     The session stays active until upsert_session detects a 24h gap on the next message.
     """
     from .explouse.bot import get_response
-    from .db_writer import upsert_contact, upsert_session, log_interaction
+    from .db_writer import (
+        upsert_contact, upsert_session, save_conversation,
+        update_session_stats, increment_contact_messages,
+    )
 
     thread_id = f"wa-{sender_phone}"
 
@@ -371,26 +344,24 @@ async def handle_explouse(
     logger.info(f"   Mensaje: {text[:120]}")
     logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    # ── v3.0: register contact and session BEFORE processing ─────────
+    # ── v4.0: register contact and session BEFORE processing ─────────
     contact_id = await upsert_contact(sender_phone, sender_name)
-    session_id_v3 = await upsert_session(contact_id, thread_id) if contact_id else None
+    session_id_v4 = await upsert_session(contact_id, thread_id) if contact_id else None
 
     try:
         await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)
 
-        # ── Legacy: save user message ────────────────────────────────
-        await save_message(
-            session_id=thread_id,
-            user_phone=sender_phone,
-            user_name=sender_name,
-            role="user",
-            message=text,
-            wa_message_id=message_id,
-            tenant=tenant.name,
-        )
-        # ── v3.0: log user interaction ───────────────────────────────
-        if session_id_v3:
-            await log_interaction(session_id_v3, "user")
+        # ── Save user message ────────────────────────────────────────
+        if session_id_v4:
+            await save_conversation(
+                session_id=session_id_v4,
+                role="user",
+                message=text,
+                user_phone=sender_phone,
+                user_name=sender_name,
+                wa_message_id=message_id,
+                tenant=tenant.name,
+            )
 
         # ── Invoke the bot and measure latency ───────────────────────
         t_start = time.monotonic()
@@ -404,23 +375,29 @@ async def handle_explouse(
             tenant.phone_number_id, tenant.access_token,
         )
 
-        # ── Legacy: save bot response ────────────────────────────────
-        await save_message(
-            session_id=thread_id,
-            user_phone=sender_phone,
-            user_name=sender_name,
-            role="assistant",
-            message=response_text,
-            tenant=tenant.name,
-        )
-        # ── v3.0: log bot interaction ────────────────────────────────
-        if session_id_v3:
-            await log_interaction(
-                session_id_v3, "assistant",
-                response_ms=elapsed_ms,
+        # ── Save bot response ────────────────────────────────────────
+        if session_id_v4:
+            await save_conversation(
+                session_id=session_id_v4,
+                role="assistant",
+                message=response_text,
+                user_phone=sender_phone,
+                user_name=sender_name,
+                tenant=tenant.name,
                 is_fallback=bot_is_fallback,
-                fallback_message=response_text if bot_is_fallback else None,
+                response_time_ms=elapsed_ms,
             )
+
+            # ── Update session counters ───────────────────────────────
+            await update_session_stats(
+                session_id_v4,
+                user_messages_delta=1,
+                bot_messages_delta=1,
+                fallback_delta=1 if bot_is_fallback else 0,
+            )
+
+        # ── Update contact message counter ────────────────────────────
+        await increment_contact_messages(sender_phone, count=2)
 
         if success:
             logger.info(f"✅ [Explouse] Reply sent to ...{sender_phone[-4:]} ({elapsed_ms}ms)")

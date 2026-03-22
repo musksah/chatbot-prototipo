@@ -1,26 +1,29 @@
 """
-Pydantic schemas for the Conversations API.
+Pydantic schemas for WhatsApp conversations/messages viewing (v4.0).
 """
-
 from datetime import datetime
-from typing import Optional, List
+from uuid import UUID
 from pydantic import BaseModel, ConfigDict
+from typing import Optional, List
 
 
 class MessageResponse(BaseModel):
     """Single message in a conversation."""
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
-    session_id: Optional[str] = None
+    id: UUID
+    session_id: UUID
     user_phone: Optional[str] = None
     user_name: Optional[str] = None
     role: Optional[str] = None
     message: Optional[str] = None
     wa_message_id: Optional[str] = None
     message_type: Optional[str] = None
+    position: Optional[int] = None
     department: Optional[str] = None
+    tenant: Optional[str] = None
     detected_intent: Optional[str] = None
+    is_fallback: bool = False
     tokens_input: Optional[int] = None
     tokens_output: Optional[int] = None
     response_time_ms: Optional[int] = None

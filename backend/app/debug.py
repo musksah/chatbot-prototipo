@@ -132,7 +132,24 @@ def stream_graph_with_debug(
     step_number = 0
     t_total_start = time.monotonic()
 
-    for node_name, node_output in graph.stream(inputs, config=config, stream_mode="updates"):
+    for chunk in graph.stream(inputs, config=config, stream_mode="updates"):
+        # LangGraph >=0.2 yields dicts {"node_name": output}, not tuples
+        if isinstance(chunk, tuple):
+            node_name, node_output = chunk
+        elif isinstance(chunk, dict):
+            node_name = next(iter(chunk))
+            node_output = chunk[node_name]
+        else:
+            logger.warning(f"[DEBUG] Unexpected stream chunk type: {type(chunk)}")
+            continue
+
+        # Some nodes (e.g. summarize) may return None or an empty dict
+        # when they have nothing to do.  Skip them to avoid AttributeError
+        # ("'NoneType' object has no attribute 'get'") in _extract_step_metadata.
+        if not node_output:
+            logger.info(f"🔍 Step (skipped): [{node_name}] returned empty/None output")
+            continue
+
         step_number += 1
         t_step_start = time.monotonic()
 
@@ -149,7 +166,7 @@ def stream_graph_with_debug(
 
     # Get the final state from the checkpointer
     final_state_snapshot = graph.get_state(config)
-    final_state = final_state_snapshot.values if final_state_snapshot else {}
+    final_state = (final_state_snapshot.values or {}) if final_state_snapshot else {}
 
     _log_summary(steps, total_ms, final_state)
 

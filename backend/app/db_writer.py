@@ -212,14 +212,15 @@ async def save_conversation(
         return
     try:
         async with pool.acquire() as conn:
-            session_uuid = uuid.UUID(session_id)
+            # Pass session_id as str — the column type is TEXT, not UUID
+            session_id_str = str(session_id)
 
             # Auto-calculate position
             position = await conn.fetchval("""
                 SELECT COALESCE(MAX(position), 0) + 1
                 FROM conversations
                 WHERE session_id = $1
-            """, session_uuid)
+            """, session_id_str)
 
             await conn.execute("""
                 INSERT INTO conversations (
@@ -238,7 +239,7 @@ async def save_conversation(
                     NOW()
                 )
             """,
-                session_uuid, wa_message_id, user_phone, user_name,
+                session_id_str, wa_message_id, user_phone, user_name,
                 message, role, position,
                 detected_intent, department, tenant,
                 is_fallback, message if is_fallback else None,

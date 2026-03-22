@@ -248,17 +248,18 @@ async def handle_cootradecun(
         else:
             response_text = "Lo siento, hubo un error procesando tu solicitud."
 
-        # ── Extract token usage from the last AI message ─────────────
-        tokens_in = tokens_out = None
-        if isinstance(last_message, AIMessage):
-            from .agent import _extract_token_usage
-            usage = _extract_token_usage(last_message)
-            tokens_in = usage.get("prompt_tokens")
-            tokens_out = usage.get("completion_tokens")
-            if tokens_in or tokens_out:
-                logger.info(
-                    f"🔢 [Cootradecun] tokens: input={tokens_in}, output={tokens_out}"
-                )
+        # ── Extract TOTAL token usage from accumulator ────────────────
+        # _token_totals_by_thread tracks ALL LLM calls (routing + agent + tools),
+        # not just the last message. This gives the correct total for the session.
+        from .agent import _token_totals_by_thread
+        token_totals = _token_totals_by_thread.pop(thread_id, {})
+        tokens_in = token_totals.get("prompt_tokens", 0)
+        tokens_out = token_totals.get("completion_tokens", 0)
+        if tokens_in or tokens_out:
+            logger.info(
+                f"🔢 [Cootradecun] tokens (full turn): input={tokens_in}, output={tokens_out}, "
+                f"requests={token_totals.get('request_count', '?')}"
+            )
 
         bot_is_fallback = _is_fallback(response_text)
 

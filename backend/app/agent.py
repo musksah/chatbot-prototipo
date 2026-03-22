@@ -179,15 +179,20 @@ class Assistant:
                 state = {**state, "messages": messages}
             elif self.name == "Certificados Agent" and _should_force_certificados_tool_call(state):
                 # Force tool usage when user already provided numeric data or OTP code.
-                messages = state["messages"] + [
-                    ("user", "Use the certificate tools to validate the OTP flow before replying.")
-                ]
+                last_msg = state["messages"][-1]
+                content = getattr(last_msg, "content", "") or ""
+                has_otp = re.search(r"\b\d{6}\b", str(content)) is not None
+                if has_otp:
+                    force_msg = "OBLIGATORIO: El usuario acaba de proporcionar un código de 6 dígitos. Llama a `verificar_codigo_otp` AHORA con la cédula y el código. No respondas con texto."
+                else:
+                    force_msg = "OBLIGATORIO: El usuario acaba de proporcionar su cédula. Llama a `solicitar_otp` AHORA con ese número de cédula. No respondas con texto."
+                messages = state["messages"] + [("user", force_msg)]
                 state = {**state, "messages": messages}
             else:
                 break
 
             attempt += 1
-            if attempt >= 2:
+            if attempt >= 3:
                 break
 
         
@@ -282,7 +287,9 @@ primary_prompt = ChatPromptTemplate.from_messages(
             "- CONTABILIDAD (proveedores, facturas, retenciones) → ToContabilidad\n"
             "- TESORERÍA (medios de pago, PSE, corresponsales) → ToTesoreria\n"
             "- CRÉDITO (solicitar crédito, tipos de crédito, simular) → ToCredito\n"
-            "- CERTIFICADOS (tributario, aportes, paz y salvo, OTP) → ToCertificados\n\n"
+            # CERTIFICADOS DESHABILITADO TEMPORALMENTE
+            # "- CERTIFICADOS (tributario, aportes, paz y salvo, OTP) → ToCertificados\n"
+            "\n"
             
             "**IMPORTANTE:**\n"
             "- Si la pregunta es ambigua, HAZ PREGUNTAS DE SEGUIMIENTO en lugar de asumir.\n"
@@ -294,7 +301,7 @@ primary_prompt = ChatPromptTemplate.from_messages(
     ]
 ).partial(time=datetime.now)
 
-primary_tools = [ToAtencionAsociado, ToNominas, ToVivienda, ToConvenios, ToCartera, ToContabilidad, ToTesoreria, ToCredito, ToCertificados]
+primary_tools = [ToAtencionAsociado, ToNominas, ToVivienda, ToConvenios, ToCartera, ToContabilidad, ToTesoreria, ToCredito]  # ToCertificados deshabilitado temporalmente
 primary_runnable = primary_prompt | llm.bind_tools(primary_tools)
 
 # 2. Atencion Asociado Agent
@@ -554,16 +561,17 @@ certificados_prompt = ChatPromptTemplate.from_messages(
             "NUNCA, BAJO NINGUNA CIRCUNSTANCIA, pidas el número de teléfono celular al usuario.\n"
             "El sistema envía el OTP automáticamente a un número registrado.\n"
             "Solo debes pedir la CÉDULA, nada más.\n\n"
-            "**FLUJO OBLIGATORIO:**\n"
+            "**FLUJO OBLIGATORIO — DEBES SEGUIR EXACTAMENTE ESTOS PASOS:**\n"
             "1. Pide SOLO el número de cédula al usuario.\n"
-            "2. Cuando tengas la cédula, usa `solicitar_otp` (solo con la cédula).\n"
-            "3. Pide el código de 6 dígitos que el usuario recibió por SMS.\n"
-            "4. Verifica con `verificar_codigo_otp`.\n"
-            "5. Si es exitoso, genera el certificado con `generar_certificado_tributario`.\n\n"
-            "**Ejemplo de respuesta correcta:**\n"
-            "'Para generar tu certificado tributario, por favor indícame tu número de cédula.'\n\n"
-            "**Ejemplo de respuesta INCORRECTA (NO HAGAS ESTO):**\n"
-            "'Por favor indícame tu cédula y tu número de teléfono' ← ESTO ESTÁ PROHIBIDO\n\n"
+            "2. En cuanto el usuario proporcione su cédula (número de 8+ dígitos), DEBES llamar INMEDIATAMENTE a la herramienta `solicitar_otp`. NO respondas con texto. LLAMA LA HERRAMIENTA.\n"
+            "3. Después de que `solicitar_otp` confirme el envío, pide el código de 6 dígitos.\n"
+            "4. En cuanto el usuario proporcione un código de 6 dígitos, DEBES llamar INMEDIATAMENTE a `verificar_codigo_otp`. NO respondas con texto. LLAMA LA HERRAMIENTA.\n"
+            "5. Si la verificación es exitosa, DEBES llamar INMEDIATAMENTE a `generar_certificado_tributario`. LLAMA LA HERRAMIENTA.\n\n"
+            "⚠️ **PROHIBIDO ABSOLUTAMENTE:**\n"
+            "- NUNCA simules o inventes el proceso. Siempre usa las herramientas reales.\n"
+            "- NUNCA digas 'esto es un proceso simulado' o 'en una implementación real'.\n"
+            "- NUNCA generes el certificado sin haber verificado el OTP primero.\n"
+            "- NUNCA respondas con texto cuando debes llamar una herramienta.\n\n"
             "Tipos de certificados: Tributario, Aportes, Paz y Salvo.\n"
             "Si el usuario cambia de tema, usa CompleteOrEscalate.\n"
             "\nCurrent time: {time}."
@@ -721,8 +729,9 @@ def route_primary(state: State):
             return "enter_tesoreria"
         elif tool_calls[0]["name"] == ToCredito.__name__:
             return "enter_credito"
-        elif tool_calls[0]["name"] == ToCertificados.__name__:
-            return "enter_certificados"
+        # CERTIFICADOS DESHABILITADO TEMPORALMENTE
+        # elif tool_calls[0]["name"] == ToCertificados.__name__:
+        #     return "enter_certificados"
     return END
 
 builder.add_conditional_edges(

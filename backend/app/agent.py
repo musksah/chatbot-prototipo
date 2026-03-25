@@ -205,11 +205,11 @@ class Assistant:
         self.runnable = runnable
         self.name = name
 
-    def __call__(self, state: State, config: RunnableConfig):
+    async def __call__(self, state: State, config: RunnableConfig):
         logger.info(f"dY- Agent '{self.name}' is processing...")
         attempt = 0
         while True:
-            result = self.runnable.invoke(state)
+            result = await self.runnable.ainvoke(state)
             if not result.tool_calls and (
                 not result.content
                 or isinstance(result.content, list)
@@ -657,7 +657,7 @@ _summarization_node_internal = SummarizationNode(
     max_summary_tokens=500,       # Max tokens for the summary itself
 )
 
-def summarization_node_with_logging(state: State):
+async def summarization_node_with_logging(state: State):
     """Wrapper that adds logging to the SummarizationNode for debugging."""
     messages_before = len(state.get("messages", []))
     context_before = state.get("context", {})
@@ -673,7 +673,7 @@ def summarization_node_with_logging(state: State):
     logger.info(f"🧠 [SUMMARIZATION] BEFORE: messages={messages_before}, tokens≈{tokens_before}, has_prior_summary={has_summary}")
 
     # Call the actual summarization node
-    result = _summarization_node_internal.invoke(state)
+    result = await _summarization_node_internal.ainvoke(state)
     
     # Log after
     messages_after = len(result.get("messages", state.get("messages", [])))

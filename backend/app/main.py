@@ -52,26 +52,37 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"⚠️ Could not create DB tables (non-fatal): {e}")
 
+    # Open the async connection pool and set up checkpointer tables
+    if isinstance(checkpointer, AsyncPostgresSaver):
+        try:
+            await _async_pg_pool.open()
+            await checkpointer.setup()
+            logger.info("✅ AsyncPostgresSaver pool opened and tables ready")
+        except Exception as e:
+            logger.warning(f"⚠️ AsyncPostgresSaver setup failed (non-fatal): {e}")
+
 
 # ── Checkpointer (PostgreSQL → MemorySaver fallback) ────────────────
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 checkpointer = None
+_async_pg_pool = None
+AsyncPostgresSaver = None  # kept for isinstance check in startup
 
 if DATABASE_URL:
     try:
-        from psycopg_pool import ConnectionPool
-        from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg_pool import AsyncConnectionPool
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-        pool = ConnectionPool(
+        _async_pg_pool = AsyncConnectionPool(
             conninfo=DATABASE_URL,
             max_size=10,
             min_size=1,
             max_lifetime=3600,
             reconnect_timeout=30,
-            check=ConnectionPool.check_connection,
+            open=False,
         )
-        checkpointer = PostgresSaver(pool)
+        checkpointer = AsyncPostgresSaver(_async_pg_pool)
         logger.info("✅ PostgresSaver inicializado correctamente con Cloud SQL")
     except Exception as e:
         logger.error(f"❌ Error al conectar PostgresSaver: {e}")

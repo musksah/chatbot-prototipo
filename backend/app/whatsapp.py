@@ -372,7 +372,7 @@ async def handle_cootradecun(
         )
         t_start = time.monotonic()
         try:
-            final_state = stream_graph_with_debug(graph_with_memory, inputs, config)
+            final_state = await stream_graph_with_debug(graph_with_memory, inputs, config)
         finally:
             typing_stop.set()
             typing_task.cancel()

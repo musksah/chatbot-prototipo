@@ -103,7 +103,7 @@ def _log_summary(steps: list, total_ms: int, final_state: dict) -> None:
     logger.info("━" * 60)
 
 
-def stream_graph_with_debug(
+async def stream_graph_with_debug(
     graph,
     inputs: dict,
     config: dict,
@@ -111,8 +111,8 @@ def stream_graph_with_debug(
     """
     Execute the LangGraph with step-by-step debug logging.
 
-    When DEBUG_GRAPH=true, uses graph.stream() to capture metadata from
-    every node execution. When disabled, falls back to graph.invoke().
+    When DEBUG_GRAPH=true, uses graph.astream() to capture metadata from
+    every node execution. When disabled, falls back to graph.ainvoke().
 
     Args:
         graph: Compiled LangGraph with checkpointer.
@@ -120,10 +120,10 @@ def stream_graph_with_debug(
         config: Config dict with thread_id.
 
     Returns:
-        The final state dict (same as graph.invoke() would return).
+        The final state dict (same as graph.ainvoke() would return).
     """
     if not DEBUG_GRAPH:
-        return graph.invoke(inputs, config=config)
+        return await graph.ainvoke(inputs, config=config)
 
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
     logger.info(f"🐛 [DEBUG] Starting graph stream for thread={thread_id}")
@@ -132,7 +132,7 @@ def stream_graph_with_debug(
     step_number = 0
     t_total_start = time.monotonic()
 
-    for chunk in graph.stream(inputs, config=config, stream_mode="updates"):
+    async for chunk in graph.astream(inputs, config=config, stream_mode="updates"):
         # LangGraph >=0.2 yields dicts {"node_name": output}, not tuples
         if isinstance(chunk, tuple):
             node_name, node_output = chunk
@@ -156,16 +156,13 @@ def stream_graph_with_debug(
         step_info = _extract_step_metadata(node_name, node_output)
         step_duration = int((time.monotonic() - t_step_start) * 1000)
 
-        # The step duration here is just metadata extraction time.
-        # The actual node execution time is the gap between yields.
-        # We measure total time at the end instead.
         steps.append(step_info)
         _log_step(step_number, step_info, step_duration)
 
     total_ms = int((time.monotonic() - t_total_start) * 1000)
 
     # Get the final state from the checkpointer
-    final_state_snapshot = graph.get_state(config)
+    final_state_snapshot = await graph.aget_state(config)
     final_state = (final_state_snapshot.values or {}) if final_state_snapshot else {}
 
     _log_summary(steps, total_ms, final_state)

@@ -160,6 +160,31 @@ class State(TypedDict):
 
 # --- Assistant Utility ---
 
+_STALLING_PHRASES = (
+    "estoy consultando",
+    "estoy validando",
+    "dame un momento",
+    "un momento por favor",
+    "verificando la información",
+    "estoy buscando",
+    "estoy revisando",
+    "consultando los datos",
+    "voy a consultar",
+    "voy a verificar",
+    "voy a revisar",
+)
+
+
+def _is_stalling(content) -> bool:
+    """Detecta si el modelo está narrando que va a usar una herramienta en vez de usarla."""
+    if isinstance(content, list):
+        text = " ".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
+    else:
+        text = str(content or "")
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in _STALLING_PHRASES)
+
+
 def _should_force_certificados_tool_call(state: State) -> bool:
     # Only force tool calls after the user provides numeric inputs (cedula/phone/OTP).
     if not state.get("messages"):
@@ -191,6 +216,10 @@ class Assistant:
                 and not result.content[0].get("text")
             ):
                 messages = state["messages"] + [("user", "Respond with a real output.")]
+                state = {**state, "messages": messages}
+            elif not result.tool_calls and _is_stalling(result.content):
+                logger.warning(f"⚠️ Agent '{self.name}' sent a stalling message instead of calling a tool. Forcing tool call.")
+                messages = state["messages"] + [("user", "OBLIGATORIO: Llama a la herramienta AHORA. NO le digas al usuario que lo vas a hacer, simplemente hazlo.")]
                 state = {**state, "messages": messages}
             elif self.name == "Certificados Agent" and _should_force_certificados_tool_call(state):
                 # Force tool usage when user already provided numeric data or OTP code.

@@ -9,6 +9,7 @@ phone_number_id) are passed per-call instead of read from globals,
 allowing different bots to share this module.
 """
 
+import asyncio
 import logging
 import time
 from typing import Optional
@@ -67,9 +68,29 @@ def parse_incoming_message(payload: dict) -> Optional[dict]:
             return None
 
         msg = messages[0]
+        msg_type = msg.get("type")
 
-        if msg.get("type") != "text":
-            logger.info(f"⏭️ Ignoring non-text message type: {msg.get('type')}")
+        # Quick reply button response
+        if msg_type == "interactive":
+            interactive = msg.get("interactive", {})
+            if interactive.get("type") == "button_reply":
+                payload = interactive["button_reply"].get("payload", "")
+                contacts = value.get("contacts", [])
+                sender_name = contacts[0].get("profile", {}).get("name", "Usuario") if contacts else "Usuario"
+                metadata = value.get("metadata", {})
+                return {
+                    "sender": msg["from"],
+                    "text": payload,          # e.g. "ACEPTO", "NO_ACEPTO", "SALIR"
+                    "message_id": msg["id"],
+                    "name": sender_name,
+                    "phone_number_id": metadata.get("phone_number_id"),
+                    "is_button_reply": True,
+                }
+            logger.info(f"⏭️ Ignoring interactive type: {interactive.get('type')}")
+            return None
+
+        if msg_type != "text":
+            logger.info(f"⏭️ Ignoring non-text message type: {msg_type}")
             return None
 
         # Identify the receiving WABA phone number
@@ -147,6 +168,84 @@ async def send_text_message(
     return True
 
 
+# ── Send template message ────────────────────────────────────────────
+
+async def send_template_welcome(
+    to: str,
+    phone_number_id: str,
+    access_token: str,
+    user_name: str,
+    image_url: str,
+    template_name: str = "bienvenida_politica_datos",
+    language_code: str = "es",
+) -> bool:
+    """
+    Envía la plantilla de bienvenida con política de datos.
+
+    La plantilla debe estar aprobada en Meta con:
+      - Header: IMAGE
+      - Body:   texto con variable {{1}} = nombre del usuario
+
+    Args:
+        to:             Número destino (sin '+')
+        phone_number_id: ID del número WABA
+        access_token:   Token de acceso WABA
+        user_name:      Nombre del usuario para {{1}}
+        image_url:      URL pública de la imagen del header
+        template_name:  Nombre exacto de la plantilla en Meta
+        language_code:  Código de idioma de la plantilla (default 'es')
+    """
+    url = f"{GRAPH_API_URL}/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language_code},
+            "components": [
+                {
+                    "type": "header",
+                    "parameters": [
+                        {
+                            "type": "image",
+                            "image": {"link": image_url},
+                        }
+                    ],
+                },
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": user_name},
+                    ],
+                },
+                # Quick reply buttons — index debe coincidir con el orden
+                # en que se definieron en Meta Business Manager
+                {"type": "button", "sub_type": "quick_reply", "index": "0", "parameters": [{"type": "payload", "payload": "ACEPTO"}]},
+                {"type": "button", "sub_type": "quick_reply", "index": "1", "parameters": [{"type": "payload", "payload": "NO_ACEPTO"}]},
+                {"type": "button", "sub_type": "quick_reply", "index": "2", "parameters": [{"type": "payload", "payload": "SALIR"}]},
+            ],
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            resp = await client.post(url, headers=headers, json=body)
+            if resp.status_code == 200:
+                logger.info(f"✅ Template '{template_name}' enviado a +{to}")
+                return True
+            else:
+                logger.error(f"❌ Template send failed ({resp.status_code}) a +{to}: {resp.text}")
+                return False
+        except httpx.HTTPError as e:
+            logger.error(f"❌ HTTP error enviando template a +{to}: {e}")
+            return False
+
+
 # ── Mark message as read ─────────────────────────────────────────────
 
 async def mark_as_read(
@@ -154,7 +253,7 @@ async def mark_as_read(
     phone_number_id: str,
     access_token: str,
 ) -> None:
-    """Mark an incoming message as read (shows blue ticks)."""
+    """Mark an incoming message as read (shows blue ticks) and start typing indicator."""
     url = f"{GRAPH_API_URL}/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -164,12 +263,42 @@ async def mark_as_read(
         "messaging_product": "whatsapp",
         "status": "read",
         "message_id": message_id,
+        "typing_indicator": {"type": "text"},
     }
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             await client.post(url, headers=headers, json=body)
         except httpx.HTTPError:
             pass
+
+
+async def _refresh_typing_loop(
+    phone_number_id: str,
+    access_token: str,
+    to: str,
+    stop_event: asyncio.Event,
+) -> None:
+    """Reenvía el typing indicator cada 20 s mientras el agente procesa."""
+    url = f"{GRAPH_API_URL}/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "typing_indicator": {"type": "text"},
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while not stop_event.is_set():
+            await asyncio.sleep(20)
+            if stop_event.is_set():
+                break
+            try:
+                await client.post(url, headers=headers, json=body)
+            except httpx.HTTPError:
+                pass
 
 
 # ── Tenant handlers ───────────────────────────────────────────────────
@@ -201,8 +330,6 @@ async def handle_cootradecun(
 
     _COST_PER_OUTPUT_TOKEN = 0.0000025  # Gemini Flash pricing
 
-    thread_id = f"wa-{sender_phone}"
-    config = {"configurable": {"thread_id": thread_id}}
     inputs = {"messages": [HumanMessage(content=text)]}
 
     logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -213,7 +340,13 @@ async def handle_cootradecun(
 
     # ── v4.0: register contact and session BEFORE processing ─────────
     contact_id = await upsert_contact(sender_phone, sender_name)
-    session_id_v4 = await upsert_session(contact_id, thread_id) if contact_id else None
+    session_id_v4 = await upsert_session(contact_id, f"wa-{sender_phone}") if contact_id else None
+
+    # Use session_id as LangGraph thread_id so memory resets every 24 h,
+    # matching Meta's conversation billing window. Falls back to phone key
+    # if the DB is unavailable.
+    thread_id = session_id_v4 if session_id_v4 else f"wa-{sender_phone}"
+    config = {"configurable": {"thread_id": thread_id}}
 
     try:
         await mark_as_read(message_id, tenant.phone_number_id, tenant.access_token)
@@ -233,8 +366,16 @@ async def handle_cootradecun(
         # ── Invoke the agent and measure latency ─────────────────────
         from .debug import stream_graph_with_debug
 
+        typing_stop = asyncio.Event()
+        typing_task = asyncio.create_task(
+            _refresh_typing_loop(tenant.phone_number_id, tenant.access_token, sender_phone, typing_stop)
+        )
         t_start = time.monotonic()
-        final_state = stream_graph_with_debug(graph_with_memory, inputs, config)
+        try:
+            final_state = stream_graph_with_debug(graph_with_memory, inputs, config)
+        finally:
+            typing_stop.set()
+            typing_task.cancel()
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
         messages = final_state.get("messages", [])
@@ -399,8 +540,16 @@ async def handle_explouse(
             )
 
         # ── Invoke the bot and measure latency ───────────────────────
+        typing_stop = asyncio.Event()
+        typing_task = asyncio.create_task(
+            _refresh_typing_loop(tenant.phone_number_id, tenant.access_token, sender_phone, typing_stop)
+        )
         t_start = time.monotonic()
-        response_text = await get_response(text, thread_id=thread_id)
+        try:
+            response_text = await get_response(text, thread_id=thread_id)
+        finally:
+            typing_stop.set()
+            typing_task.cancel()
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
         bot_is_fallback = _is_fallback(response_text)
